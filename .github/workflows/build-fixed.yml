@@ -1,0 +1,25 @@
+name: Build Fixed
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set manager version
+        run: |
+          cd manager
+          sed -i 's/extra\["managerVersionCode"\] = .*/extra["managerVersionCode"] = 35259/' build.gradle.kts
+          sed -i 's/extra\["managerVersionName"\] = .*/extra["managerVersionName"] = "v4.2.0-rc3"/' build.gradle.kts
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Build release
+        run: |
+          cd manager
+          chmod +x gradlew
+          ./gradlew assembleRelease -Pcommit=${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Manager-release
+          path: manager/app/build/outputs/apk/release/*.apk
