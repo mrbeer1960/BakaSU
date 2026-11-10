@@ -5,11 +5,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set manager version
+      - name: Patch sources
         run: |
           cd manager
           sed -i 's/extra\["managerVersionCode"\] = .*/extra["managerVersionCode"] = 35259/' build.gradle.kts
           sed -i 's/extra\["managerVersionName"\] = .*/extra["managerVersionName"] = "v4.2.0-rc3"/' build.gradle.kts
+          sed -i 's/initialHeightOffset = -154f/initialHeightOffset = 0f/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/HomePage.kt
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
