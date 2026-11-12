@@ -12,7 +12,27 @@ jobs:
           sed -i 's/extra\["managerVersionName"\] = .*/extra["managerVersionName"] = "v4.2.0-rc3"/' build.gradle.kts
           sed -i 's/initialHeightOffset = -154f/initialHeightOffset = 0f/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/HomePage.kt
           sed -i 's/if (state.showReboot) {/if (false) {/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
-          sed -i 's/actionLabel = reboot.*/actionLabel = null,/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/ModulePage.kt
+          python3 - <<'PY'
+          p='app/src/main/java/org/bakasu/bakasu/ui/screen/main/ModulePage.kt'
+          s=open(p).read()
+          s=s.replace('ButtonDefaults.filledTonalButtonColors().disabledContainerColor','ButtonDefaults.filledTonalButtonColors().containerColor')
+          s=s.replace('ButtonDefaults.filledTonalButtonColors().disabledContentColor','ButtonDefaults.filledTonalButtonColors().contentColor')
+          lines=s.split('\n'); out=[]; i=0
+          while i<len(lines):
+              if 'showReplacingSnackbar(' in lines[i] and 'val result' in lines[i]:
+                  d=lines[i].count('(')-lines[i].count(')'); i+=1
+                  while i<len(lines) and d>0:
+                      d+=lines[i].count('(')-lines[i].count(')'); i+=1
+                  while i<len(lines) and lines[i].strip()=='': i+=1
+                  if i<len(lines) and 'SnackbarResult.ActionPerformed' in lines[i]:
+                      d=lines[i].count('{')-lines[i].count('}'); i+=1
+                      while i<len(lines) and d>0:
+                          d+=lines[i].count('{')-lines[i].count('}'); i+=1
+                  continue
+              out.append(lines[i]); i+=1
+          open(p,'w').write('\n'.join(out))
+          print('snackbars removed')
+          PY
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
