@@ -15,23 +15,36 @@ jobs:
           python3 - <<'PY'
           p='app/src/main/java/org/bakasu/bakasu/ui/screen/main/ModulePage.kt'
           s=open(p).read()
-          s=s.replace('ButtonDefaults.filledTonalButtonColors().disabledContainerColor','ButtonDefaults.filledTonalButtonColors().containerColor')
-          s=s.replace('ButtonDefaults.filledTonalButtonColors().disabledContentColor','ButtonDefaults.filledTonalButtonColors().contentColor')
-          lines=s.split('\n'); out=[]; i=0
-          while i<len(lines):
-              if 'showReplacingSnackbar(' in lines[i] and 'val result' in lines[i]:
-                  d=lines[i].count('(')-lines[i].count(')'); i+=1
-                  while i<len(lines) and d>0:
-                      d+=lines[i].count('(')-lines[i].count(')'); i+=1
-                  while i<len(lines) and lines[i].strip()=='': i+=1
-                  if i<len(lines) and 'SnackbarResult.ActionPerformed' in lines[i]:
-                      d=lines[i].count('{')-lines[i].count('}'); i+=1
-                      while i<len(lines) and d>0:
-                          d+=lines[i].count('{')-lines[i].count('}'); i+=1
+          i=s.find('onUninstallClicked(module)')
+          seg=s[i:i+700]
+          seg=seg.replace('disabledContainerColor','containerColor').replace('disabledContentColor','contentColor')
+          s=s[:i]+seg+s[i+700:]
+          lines=s.split('\n'); out=[]; k=0
+          while k<len(lines):
+              if 'showReplacingSnackbar(' in lines[k] and 'val result' in lines[k]:
+                  d=lines[k].count('(')-lines[k].count(')'); k+=1
+                  while k<len(lines) and d>0:
+                      d+=lines[k].count('(')-lines[k].count(')'); k+=1
+                  while k<len(lines) and lines[k].strip()=='': k+=1
+                  if k<len(lines) and 'SnackbarResult.ActionPerformed' in lines[k]:
+                      d=lines[k].count('{')-lines[k].count('}'); k+=1
+                      while k<len(lines) and d>0:
+                          d+=lines[k].count('{')-lines[k].count('}'); k+=1
                   continue
-              out.append(lines[i]); i+=1
+              out.append(lines[k]); k+=1
+          lines=out; out=[]; k=0
+          while k<len(lines):
+              if 'val formatter = if (module.metamodule)' in lines[k]:
+                  j=k
+                  while j<len(lines) and 'ConfirmResult.Confirmed' not in lines[j]: j+=1
+                  d=lines[j].count('{')-lines[j].count('}'); j+=1
+                  while j<len(lines) and d>0:
+                      d+=lines[j].count('{')-lines[j].count('}'); j+=1
+                  k=j
+                  continue
+              out.append(lines[k]); k+=1
           open(p,'w').write('\n'.join(out))
-          print('snackbars removed')
+          print('patched: no confirm dialog, no snackbar, uninstall button color')
           PY
       - uses: actions/setup-java@v4
         with:
