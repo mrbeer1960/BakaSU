@@ -13,11 +13,12 @@ jobs:
           sed -i 's/initialHeightOffset = -154f/initialHeightOffset = 0f/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/HomePage.kt
           sed -i 's/if (state.showReboot) {/if (false) {/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
           sed -i 's/^                stringResource(titleRes),$/                "",/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
+          sed -i 's/TopAppBarDefaults.exitUntilCollapsedScrollBehavior/TopAppBarDefaults.pinnedScrollBehavior/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
           sed -i 's/else -> "Built-in"/else -> "GKI 2.0"/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/HomePage.kt
           sed -i 's/if (module.hasActionScript || module.hasWebUi) {/if (false) {/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/ModulePage.kt
           python3 - <<'PY'
-          p='app/src/main/java/org/bakasu/bakasu/ui/screen/main/ModulePage.kt'
-          s=open(p).read()
+          p1='app/src/main/java/org/bakasu/bakasu/ui/screen/main/ModulePage.kt'
+          s=open(p1).read()
           i=s.find('onUninstallClicked(module)')
           seg=s[i:i+700]
           seg=seg.replace('disabledContainerColor','containerColor').replace('disabledContentColor','contentColor')
@@ -46,7 +47,34 @@ jobs:
                   k=j
                   continue
               out.append(lines[k]); k+=1
-          open(p,'w').write('\n'.join(out))
+          open(p1,'w').write('\n'.join(out))
+          p2='app/src/main/java/org/bakasu/bakasu/ui/screen/Template.kt'
+          t=open(p2).read()
+          t=t.replace('''    contentColor: Color = contentColorFor(containerColor),
+) {
+    Surface(''','''    contentColor: Color = contentColorFor(containerColor),
+    textStyle: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.labelSmallEmphasized,
+    horizontalPadding: androidx.compose.ui.unit.Dp = 4.dp,
+    verticalPadding: androidx.compose.ui.unit.Dp = 1.dp,
+) {
+    Surface(''')
+          t=t.replace('''            style = MaterialTheme.typography.labelSmallEmphasized,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),''','''            style = textStyle,
+            modifier = Modifier.padding(horizontal = horizontalPadding, vertical = verticalPadding),''')
+          open(p2,'w').write(t)
+          p3='app/src/main/java/org/bakasu/bakasu/ui/screen/main/HomePage.kt'
+          h=open(p3).read()
+          h=h.replace('''                    LabelText(
+                        label = workingModeSurfaceText,
+                        containerColor = MaterialTheme.colorScheme.primary,
+                    )''','''                    LabelText(
+                        label = workingModeSurfaceText,
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        textStyle = MaterialTheme.typography.labelMedium,
+                        horizontalPadding = 6.dp,
+                        verticalPadding = 2.dp,
+                    )''')
+          open(p3,'w').write(h)
           print('patched')
           PY
       - uses: actions/setup-java@v4
