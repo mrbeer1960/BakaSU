@@ -12,7 +12,7 @@ jobs:
           sed -i 's/extra\["managerVersionName"\] = .*/extra["managerVersionName"] = "v4.2.0-rc3"/' build.gradle.kts
           sed -i 's/initialHeightOffset = -154f/initialHeightOffset = 0f/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/HomePage.kt
           sed -i 's/if (state.showReboot) {/if (false) {/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
-          sed -i 's/onClickModule(it.dirId, it.hasWebUi)/Unit/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/ModulePage.kt
+          sed -i 's/if (module.hasActionScript || module.hasWebUi) {/if (false) {/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/ModulePage.kt
           python3 - <<'PY'
           p='app/src/main/java/org/bakasu/bakasu/ui/screen/main/ModulePage.kt'
           s=open(p).read()
