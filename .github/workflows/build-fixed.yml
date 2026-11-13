@@ -17,7 +17,7 @@ jobs:
           sed -i 's/import androidx.compose.material3.LargeFlexibleTopAppBar/import androidx.compose.material3.LargeFlexibleTopAppBar\nimport androidx.compose.material3.TopAppBar/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
           sed -i 's/LargeFlexibleTopAppBar(/TopAppBar(/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
           sed -i 's/TopAppBarDefaults.windowInsets.add(WindowInsets(left = 12.dp))/TopAppBarDefaults.windowInsets/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
-          sed -i 's/padding.calculateTopPadding() + 12.dp/padding.calculateTopPadding() + 11.dp/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
+          sed -i 's/padding.calculateTopPadding() + 12.dp/padding.calculateTopPadding() + 12.dp/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
           sed -i 's/else -> "Built-in"/else -> "GKI 2.0"/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/HomePage.kt
           sed -i 's/if (module.hasActionScript || module.hasWebUi) {/if (false) {/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/ModulePage.kt
           python3 "$GITHUB_WORKSPACE/patch.txt"
