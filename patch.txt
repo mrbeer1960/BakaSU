@@ -54,7 +54,7 @@ new='''                    LabelText(
                         label = workingModeSurfaceText,
                         containerColor = MaterialTheme.colorScheme.primary,
                         textStyle = MaterialTheme.typography.labelMedium,
-                        horizontalPadding = 4.dp,
+                        horizontalPadding = 5.dp,
                         verticalPadding = 1.dp,
                     )'''
 if old in h:
