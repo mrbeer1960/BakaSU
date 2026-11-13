@@ -13,10 +13,14 @@ jobs:
           sed -i 's/initialHeightOffset = -154f/initialHeightOffset = 0f/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/HomePage.kt
           sed -i 's/if (state.showReboot) {/if (false) {/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
           sed -i 's/^                stringResource(titleRes),$/                "",/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
-          sed -i 's/TopAppBarDefaults.exitUntilCollapsedScrollBehavior/TopAppBarDefaults.pinnedScrollBehavior/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
+          sed -i 's/calculateTopPadding() + 12.dp/calculateTopPadding() + 20.dp/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
           sed -i 's/else -> "Built-in"/else -> "GKI 2.0"/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/HomePage.kt
           sed -i 's/if (module.hasActionScript || module.hasWebUi) {/if (false) {/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/ModulePage.kt
-          python3 "$GITHUB_WORKSPACE/patch.txt"
+          tr -d ' \n' > /tmp/p.b64 <<'B64'
+B64LINES
+          B64
+          base64 -d /tmp/p.b64 > /tmp/p.py
+          python3 /tmp/p.py
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
