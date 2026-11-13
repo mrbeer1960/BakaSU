@@ -62,6 +62,8 @@ if old in h:
 else:print('home miss')
 p4=b+'/KernelFlash.kt'
 k4=open(p4).read()
+if 'import org.bakasu.bakasu.ui.screen.ModuleInstallProgressBar' not in k4:
+    k4=k4.replace('import org.bakasu.bakasu.R','import org.bakasu.bakasu.R\nimport org.bakasu.bakasu.ui.screen.ModuleInstallProgressBar',1)
 o4='''        onReboot = { viewModel.dispatch(KernelFlashUiAction.Reboot) },
     )'''
 n4='''        onReboot = { viewModel.dispatch(KernelFlashUiAction.Reboot) },
@@ -71,7 +73,7 @@ n4='''        onReboot = { viewModel.dispatch(KernelFlashUiAction.Reboot) },
                 totalCount = 1,
                 currentModuleName = "AnyKernel3",
                 status = commonState.status,
-                failedModules = emptyList(),
+                failedModules = emptyList<String>(),
             )
         },
     )'''
