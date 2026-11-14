@@ -81,3 +81,16 @@ if o4 in k4:
     open(p4,'w').write(k4.replace(o4,n4,1));print('kf ok')
 else:print('kf miss')
 print('done')
+
+p7='app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt'
+h=open(p7).read()
+if '"刷写中"' not in h:
+    h=h.replace('''            Text(
+                stringResource(titleRes),
+                color = color,
+            )''','''            Text(
+                if (status == FlashingStatus.SUCCESS) "刷写完成" else "刷写中",
+                color = color,
+            )''',1)
+    open(p7,'w').write(h)
+print('title ok')
