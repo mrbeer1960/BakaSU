@@ -80,10 +80,4 @@ n4='''        onReboot = { viewModel.dispatch(KernelFlashUiAction.Reboot) },
 if o4 in k4:
     open(p4,'w').write(k4.replace(o4,n4,1));print('kf ok')
 else:print('kf miss')
-p6='app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt'
-g=open(p6).read()
-if 'etaCtx' not in g:
-    g=g.replace('    val snackbarHost = LocalSnackbarHost.current','    val etaCtx = androidx.compose.ui.platform.LocalContext.current\n    val snackbarHost = LocalSnackbarHost.current',1)
-    g=g.replace('Spacer(Modifier.height(padding.calculateTopPadding() + 12.dp))','Spacer(Modifier.height(padding.calculateTopPadding() + runCatching { java.io.File(etaCtx.filesDir, "sp.txt").readText().trim().toInt() }.getOrDefault(40).dp))',1)
-    open(p6,'w').write(g)
-print('sp ok')
+print('done')
