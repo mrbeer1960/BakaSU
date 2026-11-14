@@ -15,8 +15,8 @@ jobs:
           sed -i 's/TopAppBarDefaults.exitUntilCollapsedScrollBehavior/TopAppBarDefaults.pinnedScrollBehavior/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
           sed -i 's/import androidx.compose.material3.LargeFlexibleTopAppBar/import androidx.compose.material3.LargeFlexibleTopAppBar\nimport androidx.compose.material3.CenterAlignedTopAppBar/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
           sed -i 's/LargeFlexibleTopAppBar(/CenterAlignedTopAppBar(/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
-          sed -i 's/padding.calculateTopPadding() + 12.dp/padding.calculateTopPadding() + 14.dp/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
-          sed -i 's/else -> "Built-in"/else -> "GKI 2.0"/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/HomePage.kt
+          sed -i 's/padding.calculateTopPadding() + 12.dp/padding.calculateTopPadding() + 16.dp/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
+          sed -i 's/else -> "Built-in"/else -> "BUILT-IN（GKI2）"/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/HomePage.kt
           sed -i 's/if (module.hasActionScript || module.hasWebUi) {/if (false) {/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/ModulePage.kt
           python3 "$GITHUB_WORKSPACE/patch.txt"
       - uses: actions/setup-java@v4
