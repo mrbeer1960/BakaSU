@@ -95,5 +95,14 @@ if '"刷写中"' not in h:
             )''',1)
     h=h.replace('import androidx.compose.foundation.layout.height','import androidx.compose.foundation.layout.height\nimport androidx.compose.foundation.layout.offset',1)
 h=h.replace('AppBackButton(onClick = onBack)','AppBackButton(onClick = onBack, containerColor = androidx.compose.ui.graphics.Color.Transparent)',1)
+h=h.replace('Modifier.offset(x = (-2).dp)','Modifier.offset(x = (-4).dp)',1)
 open(p7,'w').write(h)
 print('title ok')
+p8='app/src/main/java/org/bakasu/bakasu/ui/component/settings/NavigationIcon.kt'
+n=open(p8).read()
+n=n.replace('containerColor: Color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.1f)','containerColor: Color = androidx.compose.ui.graphics.Color.Transparent',1)
+if 'foundation.layout.offset' not in n:
+    n=n.replace('import androidx.compose.foundation.layout.size','import androidx.compose.foundation.layout.offset\nimport androidx.compose.foundation.layout.size',1)
+n=n.replace('modifier = modifier.size(36.dp)','modifier = modifier.size(36.dp).offset(x = (-2).dp)',1)
+open(p8,'w').write(n)
+print('back bg ok')
