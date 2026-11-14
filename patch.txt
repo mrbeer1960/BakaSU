@@ -91,7 +91,7 @@ if '"刷写中"' not in h:
             )''','''            Text(
                 if (status == FlashingStatus.SUCCESS) "刷写完成" else "刷写中",
                 color = color,
-                modifier = Modifier.offset(x = (-8).dp),
+                modifier = Modifier.offset(x = (-5).dp),
             )''',1)
     h=h.replace('import androidx.compose.foundation.layout.height','import androidx.compose.foundation.layout.height\nimport androidx.compose.foundation.layout.offset',1)
 h=h.replace('AppBackButton(onClick = onBack)','AppBackButton(onClick = onBack, containerColor = androidx.compose.ui.graphics.Color.Transparent)',1)
