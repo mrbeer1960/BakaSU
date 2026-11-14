@@ -29,37 +29,18 @@ while k<len(L):
         k=j;continue
     o.append(L[k]);k+=1
 open(p,'w').write('\n'.join(o))
-p2=b+'/Template.kt'
-T=open(p2).read().split('\n')
-st=[i for i,l in enumerate(T) if 'fun LabelText(' in l][0]
-en=st
-while T[en]!='}':en+=1
-n=[];ins=False
-for l in T[st:en]:
-    t=l.strip()
-    if t==') {' and not ins:
-        n+=['    textStyle: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.labelSmallEmphasized,','    horizontalPadding: androidx.compose.ui.unit.Dp = 4.dp,','    verticalPadding: androidx.compose.ui.unit.Dp = 1.dp,',l];ins=True
-    elif t=='style = MaterialTheme.typography.labelSmallEmphasized,':n.append('            style = textStyle,')
-    elif t=='modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),':n.append('            modifier = Modifier.padding(horizontal = horizontalPadding, vertical = verticalPadding),')
-    else:n.append(l)
-T[st:en]=n
-open(p2,'w').write('\n'.join(T))
 p3=b+'/main/HomePage.kt'
 h=open(p3).read()
-old='''                    LabelText(
-                        label = workingModeSurfaceText,
-                        containerColor = MaterialTheme.colorScheme.primary,
-                    )'''
-new='''                    LabelText(
-                        label = workingModeSurfaceText,
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        textStyle = MaterialTheme.typography.labelMedium,
-                        horizontalPadding = 5.dp,
-                        verticalPadding = 1.dp,
-                    )'''
-if old in h:
-    open(p3,'w').write(h.replace(old,new));print('home ok')
-else:print('home miss')
+old_icon='''                icon = Icons.TwoTone.TaskAlt,
+                iconSize = 18.dp,'''
+new_icon='''                icon = Icons.Filled.CheckCircle,
+                iconSize = 24.dp,'''
+if old_icon in h:
+    h=h.replace(old_icon,new_icon,1)
+    if 'icons.filled.CheckCircle' not in h:
+        h=h.replace('import androidx.compose.material.icons.Icons','import androidx.compose.material.icons.Icons\nimport androidx.compose.material.icons.filled.CheckCircle',1)
+    open(p3,'w').write(h);print('icon ok')
+else:print('icon miss')
 p4=b+'/KernelFlash.kt'
 k4=open(p4).read()
 if 'import org.bakasu.bakasu.ui.screen.ModuleInstallProgressBar' not in k4:
