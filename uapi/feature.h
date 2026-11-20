@@ -9,6 +9,8 @@ enum ksu_feature_id {
     KSU_FEATURE_SELINUX_HIDE = 4,
     // 5 was webview_zygote_umount (v3.3.0), keep it unused so stale configs don't apply
     KSU_FEATURE_SHELL_SU_ADB_ONLY = 6,
+    /* 7: built-in KPM (kernel patch module) backend availability */
+    KSU_FEATURE_KPM = 7,
 
     KSU_FEATURE_MAX
 };
