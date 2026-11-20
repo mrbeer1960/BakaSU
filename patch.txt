@@ -213,7 +213,7 @@ data class KpmModule(
 object KpmBridge {
     private const val KPATCH = "/data/adb/ksu/bin/kpatch"
     const val MODULE_DIR = "/data/adb/kpm"
-    private const val EMBED_MANIFEST = "$MODULE_DIR/.embedded"
+    private const val EMBED_WORK = "/data/local/tmp/kpm-chk"
 
     private fun sh(cmd: String): Pair<Int, String> = try {
         val r = Shell.cmd(cmd).exec()
@@ -254,9 +254,9 @@ object KpmBridge {
         )
     }
 
-    fun installed(): List<KpmModule> {
+    fun installed(context: Context): List<KpmModule> {
         val loaded = loadedNames()
-        val embedded = embeddedNames()
+        val embedded = embeddedNames(context)
         val names = (installedNames() + embedded).distinct().sorted()
         return names.map { n -> parseInfo(n, loaded).copy(embedded = embedded.contains(n)) }
     }
@@ -286,18 +286,23 @@ object KpmBridge {
         return if (code == 0) name else null
     }
 
-    /** 记录「已嵌入 boot」的模块名 */
-    fun rememberEmbedded(name: String) {
-        sh("mkdir -p $MODULE_DIR && (grep -qx '$name' '$EMBED_MANIFEST' 2>/dev/null || echo '$name' >> '$EMBED_MANIFEST')")
-    }
-
-    fun embeddedNames(): Set<String> = sh("cat '$EMBED_MANIFEST' 2>/dev/null").second
-        .lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
-
-    /** 用给定名字列表重写嵌入清单（重新修补后用） */
-    fun setEmbedded(names: List<String>) {
-        sh("mkdir -p $MODULE_DIR && rm -f '$EMBED_MANIFEST' && : > '$EMBED_MANIFEST'")
-        names.forEach { rememberEmbedded(it) }
+    /** 直接读 boot 镜像，取里面真正嵌入的模块名（不再依赖本地清单） */
+    fun embeddedNames(context: Context): Set<String> {
+        ensureTools(context, listOf("kptools", "magiskboot"))
+        val slot = sh("getprop ro.boot.slot_suffix").second.trim().ifBlank { "_a" }
+        val out = sh(
+            "W=$EMBED_WORK; rm -rf \$W && mkdir -p \$W && " +
+                "dd if=/dev/block/by-name/boot$slot of=\$W/boot.img bs=4096 2>/dev/null && " +
+                "cd \$W && /data/adb/ksu/bin/magiskboot unpack boot.img >/dev/null 2>&1 && " +
+                "/data/adb/ksu/bin/kptools -l -i kernel 2>/dev/null; cd /; rm -rf \$W"
+        ).second
+        val names = out.lines()
+            .map { it.trim() }
+            .filter { it.startsWith("name=") }
+            .map { it.removePrefix("name=").trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
+        return names
     }
 
     fun remove(name: String): Boolean =
@@ -415,7 +420,7 @@ fun KpmPage(bottomPadding: Dp) {
     var pendingName by remember { mutableStateOf("") }
 
     LaunchedEffect(refresh) {
-        modules = withContext(Dispatchers.IO) { KpmBridge.installed() }
+        modules = withContext(Dispatchers.IO) { KpmBridge.installed(context) }
     }
 
     fun importFrom(uri: Uri) = scope.launch {
@@ -602,25 +607,32 @@ fun KpmPage(bottomPadding: Dp) {
                                             overflow = TextOverflow.Ellipsis,
                                         )
                                         Text(
-                                            buildString {
+                                            when {
+                                                module.embedded -> "已嵌入"
+                                                module.loaded -> "已加载"
+                                                else -> "未加载"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (module.embedded || module.loaded)
+                                                MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        run {
+                                            val meta = buildString {
                                                 if (module.version.isNotEmpty()) append(module.version)
                                                 if (module.author.isNotEmpty()) {
                                                     if (isNotEmpty()) append(", ")
                                                     append("作者 ").append(module.author)
                                                 }
-                                                if (isEmpty()) {
-                                                    append(
-                                                        when {
-                                                            module.embedded -> "已嵌入"
-                                                            module.loaded -> "已加载"
-                                                            else -> "未加载"
-                                                        }
-                                                    )
-                                                }
-                                            },
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
+                                            }
+                                            if (meta.isNotEmpty()) {
+                                                Text(
+                                                    meta,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                        }
                                         Text(
                                             "参数: " + module.args.ifBlank { "(null)" },
                                             style = MaterialTheme.typography.bodySmall,
@@ -816,7 +828,6 @@ object KpmEmbed {
 
         sh("sync")
         cacheKpm.delete()
-        KpmBridge.moduleName(kpm)?.let { KpmBridge.rememberEmbedded(it) }
         step("完成，重启后由内核直接加载该模块")
         return log.toString()
     }
@@ -882,7 +893,6 @@ fun repatch(context: Context, moduleUris: List<Uri>, onStep: (String) -> Unit = 
     if (code != 0) return log.toString() + "写入失败"
 
     sh("sync")
-    KpmBridge.setEmbedded(kept)
     step("完成，重启后生效")
     return log.toString()
 }
