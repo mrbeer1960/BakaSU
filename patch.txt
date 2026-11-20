@@ -191,6 +191,7 @@ kd='app/src/main/java/org/bakasu/bakasu/ui/screen/kpm'
 os.makedirs(kd,exist_ok=True)
 open(kd+'/KpmBridge.kt','w').write(r'''package org.bakasu.bakasu.ui.screen.kpm
 
+import android.content.Context
 import com.topjohnwu.superuser.Shell
 import java.io.File
 
@@ -205,23 +206,22 @@ data class KpmModule(
 )
 
 /**
- * KPM 前端桥接：直接调 kpatch（和 APatch 走 JNI 直连内核是同一个思路，
- * 只是我们用现成的 CLI 二进制，省得自己实现 supercall）。
- *
- * kpatch 由内核侧一起提供，位于 /data/adb/ksu/bin/kpatch。
+ * KPM 前端桥接：直接调 kpatch（和 APatch 走 JNI 直连内核是同一个思路）。
+ * 注意：/data/adb 下的读写全部通过 root shell 完成，App 自身没有权限。
  */
 object KpmBridge {
     private const val KPATCH = "/data/adb/ksu/bin/kpatch"
     const val MODULE_DIR = "/data/adb/kpm"
 
-    private fun run(args: List<String>): String = try {
-        val r = Shell.cmd((listOf(KPATCH) + args).joinToString(" ")).exec()
-        (r.out + r.err).joinToString("\n").trim()
+    private fun sh(cmd: String): Pair<Int, String> = try {
+        val r = Shell.cmd(cmd).exec()
+        Pair(r.code, (r.out + r.err).joinToString("\n").trim())
     } catch (t: Throwable) {
-        t.message ?: "error"
+        Pair(-1, t.message ?: "error")
     }
 
-    /** 内核里是否有可用的 kpatch */
+    private fun run(args: List<String>): String = sh((listOf(KPATCH) + args).joinToString(" ")).second
+
     fun available(): Boolean = run(listOf("hello")) == "hello2026"
 
     fun nums(): Int = run(listOf("kpm", "num")).trim().toIntOrNull() ?: 0
@@ -229,7 +229,13 @@ object KpmBridge {
     private fun loadedNames(): Set<String> = run(listOf("kpm", "list"))
         .lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 
-    /** 解析 kpatch kpm info 的 key=value 输出 */
+    /** 模块名列表（ls 走 root shell） */
+    fun installedNames(): List<String> = sh("ls -1 $MODULE_DIR 2>/dev/null").second
+        .lines().map { it.trim() }
+        .filter { it.endsWith(".kpm") }
+        .map { it.removeSuffix(".kpm") }
+        .sorted()
+
     private fun parseInfo(name: String, loaded: Set<String>): KpmModule {
         val fields = HashMap<String, String>()
         run(listOf("kpm", "info", name)).lines().forEach { line ->
@@ -246,12 +252,9 @@ object KpmBridge {
         )
     }
 
-    /** 已安装（/data/adb/kpm 里放着）的模块列表 */
     fun installed(): List<KpmModule> {
-        val dir = File(MODULE_DIR)
-        val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".kpm") } ?: return emptyList()
         val loaded = loadedNames()
-        return files.map { parseInfo(it.name.removeSuffix(".kpm"), loaded) }.sortedBy { it.name }
+        return installedNames().map { parseInfo(it, loaded) }
     }
 
     fun load(name: String): String = run(listOf("kpm", "load", "$MODULE_DIR/$name.kpm"))
@@ -263,23 +266,37 @@ object KpmBridge {
     fun control(name: String, args: String): String =
         run(listOf("kpm", "ctl0", name, args)).ifBlank { "ok" }
 
-    /** 把用户选的文件放进模块目录，返回模块名 */
+    /** 把用户选的临时文件复制进模块目录（用 root shell 拷） */
     fun persist(src: File): String? {
         val name = src.name.removeSuffix(".kpm").ifBlank { "module-${System.currentTimeMillis()}" }
-        return try {
-            val dir = File(MODULE_DIR)
-            if (!dir.exists()) dir.mkdirs()
-            src.copyTo(File(dir, "$name.kpm"), overwrite = true)
-            name
-        } catch (t: Throwable) {
-            null
-        }
+        val dst = "$MODULE_DIR/$name.kpm"
+        val (code, out) = sh("mkdir -p $MODULE_DIR && cp -f '${src.absolutePath}' '$dst' && chmod 644 '$dst'")
+        return if (code == 0) name else null.also { println(out) }
     }
 
-    fun remove(name: String): Boolean = try {
-        File(MODULE_DIR, "$name.kpm").delete()
-    } catch (t: Throwable) {
-        false
+    fun remove(name: String): Boolean =
+        sh("rm -f '$MODULE_DIR/$name.kpm'").first == 0
+
+    /** 把 APK assets 里的二进制释放到 /data/adb/ksu/bin（只能走 root shell） */
+    fun ensureTools(context: Context, assets: List<String>): String? {
+        val cacheDir = File(context.cacheDir, "kpmbin")
+        if (!cacheDir.exists()) cacheDir.mkdirs()
+        for (name in assets) {
+            val tmp = File(cacheDir, name)
+            try {
+                context.assets.open("kpm/$name").use { i ->
+                    tmp.outputStream().use { o -> i.copyTo(o) }
+                }
+            } catch (t: Throwable) {
+                return "读取 APK 内 $name 失败：${t.message}"
+            }
+            val (code, out) = sh(
+                "mkdir -p /data/adb/ksu/bin && cp -f '${tmp.absolutePath}' '/data/adb/ksu/bin/$name' " +
+                    "&& chmod 755 '/data/adb/ksu/bin/$name'"
+            )
+            if (code != 0) return "释放 $name 失败：$out"
+        }
+        return null
     }
 }
 ''')
@@ -644,8 +661,8 @@ import java.io.File
  *   magiskboot repack boot.img            → new-boot.img
  *   dd new-boot.img → boot_<slot>
  *
- * 二进制（assets/kpm/{kptools,kpimg,magiskboot}）首次使用时释放到 /data/adb/ksu/bin。
- * 不自动备份（由用户自行负责）。
+ * 所有 /data/adb、/data/local/tmp 的读写都走 root shell（App 自身无权限）。
+ * 不自动备份 boot（由用户自行负责）。
  */
 object KpmEmbed {
     private const val BIN_DIR = "/data/adb/ksu/bin"
@@ -661,92 +678,70 @@ object KpmEmbed {
         Pair(-1, t.message ?: "error")
     }
 
-    fun ensureTools(context: Context): String? = try {
-        val dir = File(BIN_DIR)
-        if (!dir.exists()) dir.mkdirs()
-        val items = listOf(
-            "kpm/kptools" to KTOOLS,
-            "kpm/kpimg" to KPIMG,
-            "kpm/magiskboot" to MAGISKBOOT,
-        )
-        for ((asset, dst) in items) {
-            val f = File(dst)
-            if (!f.exists() || f.length() == 0L) {
-                context.assets.open(asset).use { i ->
-                    f.outputStream().use { o -> i.copyTo(o) }
-                }
-                f.setExecutable(true, false)
-            }
-        }
-        null
-    } catch (t: Throwable) {
-        "释放 kptools/kpimg/magiskboot 失败：${t.message}"
-    }
+    private fun exists(path: String): Boolean = sh("[ -s '$path' ] && echo yes").second.contains("yes")
 
     fun embed(context: Context, moduleUri: Uri, onStep: (String) -> Unit = {}): String {
-        ensureTools(context)?.let { return it }
-
         val log = StringBuilder()
         fun step(msg: String) {
             log.append(msg).append('\n')
             onStep(msg)
         }
 
+        KpmBridge.ensureTools(context, listOf("kptools", "kpimg", "magiskboot"))
+            ?.let { return it }
+
         val slot = sh("getprop ro.boot.slot_suffix").second.trim().ifBlank { "_a" }
         val dev = "/dev/block/by-name/boot$slot"
         step("目标分区：$dev")
 
-        val work = File(WORK)
-        work.deleteRecursively()
-        work.mkdirs()
-
-        val kpm = File(work, "module.kpm")
+        val cacheKpm = File(context.cacheDir, "embed-${System.currentTimeMillis()}.kpm")
         try {
             context.contentResolver.openInputStream(moduleUri)?.use { i ->
-                kpm.outputStream().use { o -> i.copyTo(o) }
+                cacheKpm.outputStream().use { o -> i.copyTo(o) }
             } ?: return "读取所选文件失败"
         } catch (t: Throwable) {
             return "读取所选文件失败：${t.message}"
         }
 
-        val bootImg = File(work, "boot.img")
-        var (code, out) = sh("dd if=$dev of=${bootImg.absolutePath} bs=4096 2>&1")
+        sh("rm -rf $WORK && mkdir -p $WORK")
+        val kpm = "$WORK/module.kpm"
+        var (code, out) = sh("cp -f '${cacheKpm.absolutePath}' '$kpm' && chmod 644 '$kpm'")
+        step("准备模块文件：code=$code")
+        if (code != 0) return log.toString() + "复制模块失败：$out"
+
+        code = sh("dd if=$dev of=$WORK/boot.img bs=4096 2>&1").first
         step("读取 boot：code=$code")
-        if (code != 0 || !bootImg.exists()) return log.toString() + "读取 boot 失败：$out"
+        if (code != 0 || !exists("$WORK/boot.img")) return log.toString() + "读取 boot 失败"
 
         var r = sh("cd $WORK && $MAGISKBOOT unpack boot.img 2>&1")
         step("解包：code=${r.first}")
-        if (r.first != 0 || !File(work, "kernel").exists()) {
+        if (r.first != 0 || !exists("$WORK/kernel")) {
             return log.toString() + "解包失败：${r.second.take(400)}"
         }
 
-        r = sh("cd $WORK && $KTOOLS -p -i kernel -k $KPIMG -M ${kpm.absolutePath} -T kpm -o kernel.new 2>&1")
+        r = sh("cd $WORK && $KTOOLS -p -i kernel -k $KPIMG -M $kpm -T kpm -o kernel.new 2>&1")
         step("打补丁 + 嵌入：code=${r.first}")
-        if (r.first != 0 || !File(work, "kernel.new").exists()) {
+        if (r.first != 0 || !exists("$WORK/kernel.new")) {
             return log.toString() + "打补丁失败：${r.second.takeLast(600)}"
         }
 
-        File(work, "kernel.new").renameTo(File(work, "kernel"))
+        sh("cd $WORK && mv -f kernel.new kernel")
+        sh("cd $WORK && rm -f new-boot.img")
 
-        val newBoot = File(work, "new-boot.img")
-        newBoot.delete()
         r = sh("cd $WORK && $MAGISKBOOT repack boot.img new-boot.img 2>&1")
         step("重打包：code=${r.first}")
-        if (r.first != 0 || !newBoot.exists() || newBoot.length() < 1024 * 1024) {
+        if (r.first != 0 || !exists("$WORK/new-boot.img")) {
             return log.toString() + "重打包失败：${r.second.take(400)}"
         }
 
-        r = sh("dd if=${newBoot.absolutePath} of=$dev bs=4096 2>&1")
+        r = sh("dd if=$WORK/new-boot.img of=$dev bs=4096 2>&1")
         step("写入分区：code=${r.first}")
         if (r.first != 0) return log.toString() + "写入失败：${r.second.take(400)}"
 
-        sync()
+        sh("sync")
+        cacheKpm.delete()
         step("完成，重启后由内核直接加载该模块")
         return log.toString()
-    }
-
-    private fun sync() {
-        sh("sync")
     }
 }
 ''')
