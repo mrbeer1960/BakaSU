@@ -232,7 +232,6 @@ object KpmBridge {
         .lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 
     /** 模块名列表（ls 走 root shell） */
-    fun installedNames(): List<String> = sh("ls -1 $MODULE_DIR 2>/dev/null").second
         .lines().map { it.trim() }
         .filter { it.endsWith(".kpm") }
         .map { it.removeSuffix(".kpm") }
@@ -257,11 +256,12 @@ object KpmBridge {
     fun installed(context: Context): List<KpmModule> {
         val loaded = loadedNames()
         val embedded = embeddedNames(context)
-        val names = (installedNames() + embedded).distinct().sorted()
+        val names = (loaded + embedded).distinct().sorted()
         return names.map { n -> parseInfo(n, loaded).copy(embedded = embedded.contains(n)) }
     }
 
-    fun load(name: String): String = run(listOf("kpm", "load", "$MODULE_DIR/$name.kpm"))
+    /** 从任意路径加载（不落地，重启即失效） */
+    fun load(path: String): String = run(listOf("kpm", "load", path))
 
     fun unload(name: String): String = run(listOf("kpm", "unload", name))
 
@@ -270,21 +270,6 @@ object KpmBridge {
     fun control(name: String, args: String): String =
         run(listOf("kpm", "ctl0", name, args)).ifBlank { "ok" }
 
-    /** 用 kptools 读取 .kpm 内部的模块名（和 kpm list 里的名字一致） */
-    fun moduleName(path: String): String? =
-        sh("/data/adb/ksu/bin/kptools -l -M '$path' 2>/dev/null").second
-            .lines().firstOrNull { it.startsWith("name=") }
-            ?.substringAfter("name=")?.trim()?.takeIf { it.isNotEmpty() }
-
-    /** 把用户选的临时文件复制进模块目录，并按模块真实名字保存（root shell 拷） */
-    fun persist(context: Context, src: File): String? {
-        ensureTools(context, listOf("kptools"))
-        val name = moduleName(src.absolutePath)
-            ?: src.name.removeSuffix(".kpm").ifBlank { "module-${System.currentTimeMillis()}" }
-        val dst = "$MODULE_DIR/$name.kpm"
-        val (code, _) = sh("mkdir -p $MODULE_DIR && cp -f '${src.absolutePath}' '$dst' && chmod 644 '$dst'")
-        return if (code == 0) name else null
-    }
 
     /** 直接读 boot 镜像，取里面真正嵌入的模块名（不再依赖本地清单） */
     fun embeddedNames(context: Context): Set<String> {
@@ -305,8 +290,6 @@ object KpmBridge {
         return names
     }
 
-    fun remove(name: String): Boolean =
-        sh("rm -f '$MODULE_DIR/$name.kpm'").first == 0
 
     /** 把 APK assets 里的二进制释放到 /data/adb/ksu/bin（只能走 root shell） */
     fun ensureTools(context: Context, assets: List<String>): String? {
@@ -355,7 +338,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Archive
-import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.AlertDialog
@@ -431,8 +413,9 @@ fun KpmPage(bottomPadding: Dp) {
                 context.contentResolver.openInputStream(uri)?.use { input ->
                     tmp.outputStream().use { out -> input.copyTo(out) }
                 }
-                val name = KpmBridge.persist(context, tmp) ?: return@withContext "保存失败"
-                "load: " + KpmBridge.load(name).ifBlank { "ok" }
+                val r = KpmBridge.load(tmp.absolutePath)
+                tmp.delete()
+                "load: " + r.ifBlank { "ok" }
             } catch (t: Throwable) {
                 "失败: ${t.message}"
             }
@@ -674,17 +657,7 @@ fun KpmPage(bottomPadding: Dp) {
                                                 refresh++
                                             }
                                         }) { Text("卸载") }
-                                        IconButton(onClick = {
-                                            scope.launch {
-                                                busy = true
-                                                withContext(Dispatchers.IO) {
-                                                    if (module.loaded) KpmBridge.unload(module.name)
-                                                    KpmBridge.remove(module.name)
-                                                }
-                                                busy = false
-                                                refresh++
-                                            }
-                                        }) { Icon(Icons.Rounded.DeleteOutline, "移除") }
+
                                     }
                                 }
                             }
