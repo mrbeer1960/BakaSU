@@ -231,11 +231,6 @@ object KpmBridge {
     private fun loadedNames(): Set<String> = run(listOf("kpm", "list"))
         .lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 
-    /** 模块名列表（ls 走 root shell） */
-        .lines().map { it.trim() }
-        .filter { it.endsWith(".kpm") }
-        .map { it.removeSuffix(".kpm") }
-        .sorted()
 
     private fun parseInfo(name: String, loaded: Set<String>): KpmModule {
         val fields = HashMap<String, String>()
@@ -266,6 +261,12 @@ object KpmBridge {
     fun unload(name: String): String = run(listOf("kpm", "unload", name))
 
     fun info(name: String): String = run(listOf("kpm", "info", name))
+
+    /** 用 kptools 读 .kpm 内部的模块名 */
+    fun moduleName(path: String): String? =
+        sh("/data/adb/ksu/bin/kptools -l -M '$path' 2>/dev/null").second
+            .lines().firstOrNull { it.startsWith("name=") }
+            ?.substringAfter("name=")?.trim()?.takeIf { it.isNotEmpty() }
 
     fun control(name: String, args: String): String =
         run(listOf("kpm", "ctl0", name, args)).ifBlank { "ok" }
@@ -730,7 +731,7 @@ object KpmEmbed {
     private const val KTOOLS = "$BIN_DIR/kptools"
     private const val KPIMG = "$BIN_DIR/kpimg"
     private const val MAGISKBOOT = "$BIN_DIR/magiskboot"
-    private const val WORK = "/data/local/tmp/kpm-embed"
+    private const val WORK = "/tmp/kpm-embed"
 
     private fun sh(cmd: String): Pair<Int, String> = try {
         val r = Shell.cmd(cmd).exec()
@@ -800,6 +801,7 @@ object KpmEmbed {
         if (r.first != 0) return log.toString() + "写入失败：${r.second.take(400)}"
 
         sh("sync")
+        sh("rm -rf $WORK")
         cacheKpm.delete()
         step("完成，重启后由内核直接加载该模块")
         return log.toString()
@@ -866,6 +868,7 @@ fun repatch(context: Context, moduleUris: List<Uri>, onStep: (String) -> Unit = 
     if (code != 0) return log.toString() + "写入失败"
 
     sh("sync")
+    sh("rm -rf $WORK")
     step("完成，重启后生效")
     return log.toString()
 }
