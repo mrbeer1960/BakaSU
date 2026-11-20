@@ -35,6 +35,7 @@
 #include "feature/module_blacklist.h"
 #include "feature/sucompat.h"
 #include "feature/selinux_hide.h"
+#include "feature/kpm.h"
 #include "infra/symbol_resolver.h"
 #include "preinit/preinit.h"
 #include "uapi/supercall.h"
