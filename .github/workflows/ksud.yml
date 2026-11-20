@@ -58,8 +58,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          
+      - name: Apply patch.txt
+        run: cd manager && python3 ../patch.txt
 
       - name: Download artifacts
+        if: ${{ inputs.pack_lkm || inputs.pack_ksuinit }}
         uses: actions/download-artifact@v8
 
       - name: Prepare LKM fies
