@@ -294,6 +294,12 @@ object KpmBridge {
     fun embeddedNames(): Set<String> = sh("cat '$EMBED_MANIFEST' 2>/dev/null").second
         .lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 
+    /** 用给定名字列表重写嵌入清单（重新修补后用） */
+    fun setEmbedded(names: List<String>) {
+        sh("mkdir -p $MODULE_DIR && rm -f '$EMBED_MANIFEST' && : > '$EMBED_MANIFEST'")
+        names.forEach { rememberEmbedded(it) }
+    }
+
     fun remove(name: String): Boolean =
         sh("rm -f '$MODULE_DIR/$name.kpm'").first == 0
 
@@ -435,6 +441,23 @@ fun KpmPage(bottomPadding: Dp) {
         if (uri != null) importFrom(uri)
     }
 
+    val repatchPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNullOrEmpty()) {
+            output = "未选择任何模块，已取消重新修补"
+            showOutput = true
+        } else {
+            scope.launch {
+                busy = true
+                output = withContext(Dispatchers.IO) { KpmEmbed.repatch(context, uris) }
+                showOutput = true
+                busy = false
+                refresh++
+            }
+        }
+    }
+
     val embedPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             pendingEmbed = uri
@@ -463,6 +486,29 @@ fun KpmPage(bottomPadding: Dp) {
                             Text("嵌入", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
                         },
                         onClick = { menuOpen = false; embedPicker.launch(arrayOf("*/*")) },
+                    )
+                    DropdownMenuItem(
+                        modifier = Modifier.fillMaxWidth(),
+                        text = {
+                            Text("重新修补", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+                        },
+                        onClick = { menuOpen = false; repatchPicker.launch(arrayOf("*/*")) },
+                    )
+                    DropdownMenuItem(
+                        modifier = Modifier.fillMaxWidth(),
+                        text = {
+                            Text("清空嵌入", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+                        },
+                        onClick = {
+                            menuOpen = false
+                            scope.launch {
+                                busy = true
+                                output = withContext(Dispatchers.IO) { KpmEmbed.repatch(context, emptyList()) }
+                                showOutput = true
+                                busy = false
+                                refresh++
+                            }
+                        },
                     )
                 }
             }
@@ -774,6 +820,72 @@ object KpmEmbed {
         step("完成，重启后由内核直接加载该模块")
         return log.toString()
     }
+
+/**
+ * 「重新修补」：把 boot 里嵌入的模块替换成给定的一组。
+ * 一个都不选 = 清空（kptools -p 是重建语义，没 -M 的就没了）。
+ */
+fun repatch(context: Context, moduleUris: List<Uri>, onStep: (String) -> Unit = {}): String {
+    val log = StringBuilder()
+    fun step(msg: String) {
+        log.append(msg).append('\n')
+        onStep(msg)
+    }
+
+    KpmBridge.ensureTools(context, listOf("kptools", "kpimg", "magiskboot"))?.let { return it }
+
+    val slot = sh("getprop ro.boot.slot_suffix").second.trim().ifBlank { "_a" }
+    val dev = "/dev/block/by-name/boot$slot"
+    step("目标分区：$dev，保留模块 ${moduleUris.size} 个")
+
+    sh("rm -rf $WORK && mkdir -p $WORK")
+
+    val args = StringBuilder()
+    val kept = mutableListOf<String>()
+    moduleUris.forEachIndexed { index, uri ->
+        val tmp = File(context.cacheDir, "keep-$index.kpm")
+        try {
+            context.contentResolver.openInputStream(uri)?.use { i ->
+                tmp.outputStream().use { o -> i.copyTo(o) }
+            }
+        } catch (t: Throwable) {
+            return "读取第 ${index + 1} 个文件失败：${t.message}"
+        }
+        val dst = "$WORK/keep-$index.kpm"
+        val (c, _) = sh("cp -f '${tmp.absolutePath}' '$dst' && chmod 644 '$dst'")
+        tmp.delete()
+        if (c != 0) return log.toString() + "复制第 ${index + 1} 个模块失败"
+        args.append("-M $dst -T kpm ")
+        KpmBridge.moduleName(dst)?.let { kept.add(it) }
+    }
+    step("保留：" + kept.joinToString(", ").ifBlank { "（无，全部清空）" })
+
+    var code = sh("dd if=$dev of=$WORK/boot.img bs=4096 2>&1").first
+    step("读取 boot：code=$code")
+    if (code != 0) return log.toString() + "读取 boot 失败"
+
+    var r = sh("cd $WORK && $MAGISKBOOT unpack boot.img 2>&1")
+    step("解包：code=${r.first}")
+    if (r.first != 0) return log.toString() + "解包失败：${r.second.take(300)}"
+
+    r = sh("cd $WORK && $KTOOLS -p -i kernel -k $KPIMG $args-o kernel.new 2>&1")
+    step("重新打补丁：code=${r.first}")
+    if (r.first != 0) return log.toString() + "打补丁失败：${r.second.takeLast(600)}"
+
+    sh("cd $WORK && mv -f kernel.new kernel && rm -f new-boot.img")
+    r = sh("cd $WORK && $MAGISKBOOT repack boot.img new-boot.img 2>&1")
+    step("重打包：code=${r.first}")
+    if (r.first != 0) return log.toString() + "重打包失败：${r.second.take(300)}"
+
+    code = sh("dd if=$WORK/new-boot.img of=$dev bs=4096 2>&1").first
+    step("写入分区：code=$code")
+    if (code != 0) return log.toString() + "写入失败"
+
+    sh("sync")
+    KpmBridge.setEmbedded(kept)
+    step("完成，重启后生效")
+    return log.toString()
+}
 }
 ''')
 print('kpm sources ok')
