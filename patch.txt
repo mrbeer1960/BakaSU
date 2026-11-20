@@ -203,6 +203,7 @@ data class KpmModule(
     val args: String = "",
     val description: String = "",
     val loaded: Boolean = false,
+    val embedded: Boolean = false,
 )
 
 /**
@@ -212,6 +213,7 @@ data class KpmModule(
 object KpmBridge {
     private const val KPATCH = "/data/adb/ksu/bin/kpatch"
     const val MODULE_DIR = "/data/adb/kpm"
+    private const val EMBED_MANIFEST = "$MODULE_DIR/.embedded"
 
     private fun sh(cmd: String): Pair<Int, String> = try {
         val r = Shell.cmd(cmd).exec()
@@ -254,7 +256,9 @@ object KpmBridge {
 
     fun installed(): List<KpmModule> {
         val loaded = loadedNames()
-        return installedNames().map { parseInfo(it, loaded) }
+        val embedded = embeddedNames()
+        val names = (installedNames() + embedded).distinct().sorted()
+        return names.map { n -> parseInfo(n, loaded).copy(embedded = embedded.contains(n)) }
     }
 
     fun load(name: String): String = run(listOf("kpm", "load", "$MODULE_DIR/$name.kpm"))
@@ -266,13 +270,29 @@ object KpmBridge {
     fun control(name: String, args: String): String =
         run(listOf("kpm", "ctl0", name, args)).ifBlank { "ok" }
 
-    /** 把用户选的临时文件复制进模块目录（用 root shell 拷） */
-    fun persist(src: File): String? {
-        val name = src.name.removeSuffix(".kpm").ifBlank { "module-${System.currentTimeMillis()}" }
+    /** 用 kptools 读取 .kpm 内部的模块名（和 kpm list 里的名字一致） */
+    fun moduleName(path: String): String? =
+        sh("/data/adb/ksu/bin/kptools -l -M '$path' 2>/dev/null").second
+            .lines().firstOrNull { it.startsWith("name=") }
+            ?.substringAfter("name=")?.trim()?.takeIf { it.isNotEmpty() }
+
+    /** 把用户选的临时文件复制进模块目录，并按模块真实名字保存（root shell 拷） */
+    fun persist(context: Context, src: File): String? {
+        ensureTools(context, listOf("kptools"))
+        val name = moduleName(src.absolutePath)
+            ?: src.name.removeSuffix(".kpm").ifBlank { "module-${System.currentTimeMillis()}" }
         val dst = "$MODULE_DIR/$name.kpm"
-        val (code, out) = sh("mkdir -p $MODULE_DIR && cp -f '${src.absolutePath}' '$dst' && chmod 644 '$dst'")
-        return if (code == 0) name else null.also { println(out) }
+        val (code, _) = sh("mkdir -p $MODULE_DIR && cp -f '${src.absolutePath}' '$dst' && chmod 644 '$dst'")
+        return if (code == 0) name else null
     }
+
+    /** 记录「已嵌入 boot」的模块名 */
+    fun rememberEmbedded(name: String) {
+        sh("mkdir -p $MODULE_DIR && (grep -qx '$name' '$EMBED_MANIFEST' 2>/dev/null || echo '$name' >> '$EMBED_MANIFEST')")
+    }
+
+    fun embeddedNames(): Set<String> = sh("cat '$EMBED_MANIFEST' 2>/dev/null").second
+        .lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 
     fun remove(name: String): Boolean =
         sh("rm -f '$MODULE_DIR/$name.kpm'").first == 0
@@ -400,7 +420,7 @@ fun KpmPage(bottomPadding: Dp) {
                 context.contentResolver.openInputStream(uri)?.use { input ->
                     tmp.outputStream().use { out -> input.copyTo(out) }
                 }
-                val name = KpmBridge.persist(tmp) ?: return@withContext "保存失败"
+                val name = KpmBridge.persist(context, tmp) ?: return@withContext "保存失败"
                 "load: " + KpmBridge.load(name).ifBlank { "ok" }
             } catch (t: Throwable) {
                 "失败: ${t.message}"
@@ -542,7 +562,15 @@ fun KpmPage(bottomPadding: Dp) {
                                                     if (isNotEmpty()) append(", ")
                                                     append("作者 ").append(module.author)
                                                 }
-                                                if (isEmpty()) append(if (module.loaded) "已加载" else "未加载")
+                                                if (isEmpty()) {
+                                                    append(
+                                                        when {
+                                                            module.embedded -> "已嵌入"
+                                                            module.loaded -> "已加载"
+                                                            else -> "未加载"
+                                                        }
+                                                    )
+                                                }
                                             },
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -577,27 +605,29 @@ fun KpmPage(bottomPadding: Dp) {
                                             Text("控制")
                                         }
                                     }
-                                    TextButton(onClick = {
-                                        scope.launch {
-                                            busy = true
-                                            output = withContext(Dispatchers.IO) { KpmBridge.unload(module.name) }
-                                                .ifBlank { "已卸载 ${module.name}" }
-                                            showOutput = true
-                                            busy = false
-                                            refresh++
-                                        }
-                                    }) { Text("卸载") }
-                                    IconButton(onClick = {
-                                        scope.launch {
-                                            busy = true
-                                            withContext(Dispatchers.IO) {
-                                                if (module.loaded) KpmBridge.unload(module.name)
-                                                KpmBridge.remove(module.name)
+                                    if (!module.embedded) {
+                                        TextButton(onClick = {
+                                            scope.launch {
+                                                busy = true
+                                                output = withContext(Dispatchers.IO) { KpmBridge.unload(module.name) }
+                                                    .ifBlank { "已卸载 ${module.name}" }
+                                                showOutput = true
+                                                busy = false
+                                                refresh++
                                             }
-                                            busy = false
-                                            refresh++
-                                        }
-                                    }) { Icon(Icons.Rounded.DeleteOutline, "移除") }
+                                        }) { Text("卸载") }
+                                        IconButton(onClick = {
+                                            scope.launch {
+                                                busy = true
+                                                withContext(Dispatchers.IO) {
+                                                    if (module.loaded) KpmBridge.unload(module.name)
+                                                    KpmBridge.remove(module.name)
+                                                }
+                                                busy = false
+                                                refresh++
+                                            }
+                                        }) { Icon(Icons.Rounded.DeleteOutline, "移除") }
+                                    }
                                 }
                             }
                         }
@@ -740,6 +770,7 @@ object KpmEmbed {
 
         sh("sync")
         cacheKpm.delete()
+        KpmBridge.moduleName(kpm)?.let { KpmBridge.rememberEmbedded(it) }
         step("完成，重启后由内核直接加载该模块")
         return log.toString()
     }
