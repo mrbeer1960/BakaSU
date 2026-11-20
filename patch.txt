@@ -205,39 +205,36 @@ data class KpmModule(
 )
 
 /**
- * KPM 前端桥接：全部走 ksud 的 kpm 子命令（ksud 直接和内核里的 kpatch 通信）。
- * 不再需要任何外部二进制。
+ * KPM 前端桥接：直接调 kpatch（和 APatch 走 JNI 直连内核是同一个思路，
+ * 只是我们用现成的 CLI 二进制，省得自己实现 supercall）。
+ *
+ * kpatch 由内核侧一起提供，位于 /data/adb/ksu/bin/kpatch。
  */
 object KpmBridge {
-    private const val KSUD = "/data/adb/ksud"
+    private const val KPATCH = "/data/adb/ksu/bin/kpatch"
     const val MODULE_DIR = "/data/adb/kpm"
 
     private fun run(args: List<String>): String = try {
-        val r = Shell.cmd((listOf(KSUD) + args).joinToString(" ")).exec()
+        val r = Shell.cmd((listOf(KPATCH) + args).joinToString(" ")).exec()
         (r.out + r.err).joinToString("\n").trim()
     } catch (t: Throwable) {
         t.message ?: "error"
     }
 
-    /** 内核里是否有可用的 kpatch（ksud kpm nums 能跑通即算） */
-    fun available(): Boolean = try {
-        val out = run(listOf("kpm", "nums"))
-        out.isNotEmpty() && !out.contains("failed") && !out.contains("not")
-    } catch (t: Throwable) {
-        false
-    }
+    /** 内核里是否有可用的 kpatch */
+    fun available(): Boolean = run(listOf("hello")) == "hello2026"
+
+    fun nums(): Int = run(listOf("kpm", "num")).trim().toIntOrNull() ?: 0
 
     private fun loadedNames(): Set<String> = run(listOf("kpm", "list"))
         .lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 
-    /** 解析 ksud kpm info 的 key=value 输出 */
+    /** 解析 kpatch kpm info 的 key=value 输出 */
     private fun parseInfo(name: String, loaded: Set<String>): KpmModule {
         val fields = HashMap<String, String>()
         run(listOf("kpm", "info", name)).lines().forEach { line ->
             val idx = line.indexOf('=')
-            if (idx > 0) {
-                fields[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
-            }
+            if (idx > 0) fields[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
         }
         return KpmModule(
             name = name,
@@ -261,8 +258,10 @@ object KpmBridge {
 
     fun unload(name: String): String = run(listOf("kpm", "unload", name))
 
+    fun info(name: String): String = run(listOf("kpm", "info", name))
+
     fun control(name: String, args: String): String =
-        run(listOf("kpm", "control", name, args)).ifBlank { "ok" }
+        run(listOf("kpm", "ctl0", name, args)).ifBlank { "ok" }
 
     /** 把用户选的文件放进模块目录，返回模块名 */
     fun persist(src: File): String? {
@@ -384,6 +383,11 @@ fun KpmPage(bottomPadding: Dp) {
         if (uri != null) importFrom(uri)
     }
 
+    var embedUri by remember { mutableStateOf<Uri?>(null) }
+    val embedPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) embedUri = uri
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize().padding(bottom = bottomPadding),
         floatingActionButton = {
@@ -393,13 +397,26 @@ fun KpmPage(bottomPadding: Dp) {
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
-                        text = { Text("加载") },
+                        modifier = Modifier.fillMaxWidth(),
+                        text = {
+                            Text(
+                                "加载",
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = TextAlign.Center,
+                            )
+                        },
                         onClick = { menuOpen = false; picker.launch(arrayOf("*/*")) },
                     )
                     DropdownMenuItem(
-                        text = { Text("嵌入 boot（暂不支持）") },
-                        enabled = false,
-                        onClick = { },
+                        modifier = Modifier.fillMaxWidth(),
+                        text = {
+                            Text(
+                                "嵌入",
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = TextAlign.Center,
+                            )
+                        },
+                        onClick = { menuOpen = false; embedPicker.launch(arrayOf("*/*")) },
                     )
                 }
             }
@@ -553,6 +570,34 @@ fun KpmPage(bottomPadding: Dp) {
         )
     }
 
+    val pendingEmbed = embedUri
+    if (pendingEmbed != null) {
+        AlertDialog(
+            onDismissRequest = { embedUri = null },
+            title = { Text("嵌入") },
+            text = {
+                Text(
+                    "将把所选模块写入 boot 分区，重启后由内核直接加载。\n" +
+                        "写入前会自动备份当前 boot 到 /data/adb/kpm/backup/。\n" +
+                        "需要重启生效；失败可能无法开机。确认继续？",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    embedUri = null
+                    scope.launch {
+                        busy = true
+                        output = withContext(Dispatchers.IO) { KpmEmbed.embed(context, pendingEmbed) }
+                        showOutput = true
+                        busy = false
+                    }
+                }) { Text("确认写入") }
+            },
+            dismissButton = { TextButton(onClick = { embedUri = null }) { Text("取消") } },
+        )
+    }
+
     if (showOutput) {
         AlertDialog(
             onDismissRequest = { showOutput = false },
@@ -560,6 +605,134 @@ fun KpmPage(bottomPadding: Dp) {
             text = { Text(output.ifBlank { "（无输出）" }, style = MaterialTheme.typography.bodySmall) },
             confirmButton = { TextButton(onClick = { showOutput = false }) { Text("关闭") } },
         )
+    }
+}
+''')
+open(kd+'/KpmEmbed.kt','w').write(r'''package org.bakasu.bakasu.ui.screen.kpm
+
+import android.content.Context
+import android.net.Uri
+import com.topjohnwu.superuser.Shell
+import java.io.File
+
+/**
+ * 真·嵌入：把 .kpm 写进 boot 镜像（APatch 的「嵌入」同思路）。
+ *
+ *   dd boot_<slot> → boot.img
+ *   magiskboot unpack boot.img            → kernel
+ *   kptools -p -i kernel -k kpimg -M <kpm> -T kpm -o kernel.new
+ *   magiskboot repack boot.img            → new-boot.img
+ *   dd new-boot.img → boot_<slot>
+ *
+ * 二进制（assets/kpm/{kptools,kpimg,magiskboot}）首次使用时释放到 /data/adb/ksu/bin。
+ * 写回前会自动把当前 boot 备份到 /data/adb/kpm/backup/。
+ */
+object KpmEmbed {
+    private const val BIN_DIR = "/data/adb/ksu/bin"
+    private const val KTOOLS = "$BIN_DIR/kptools"
+    private const val KPIMG = "$BIN_DIR/kpimg"
+    private const val MAGISKBOOT = "$BIN_DIR/magiskboot"
+    private const val WORK = "/data/local/tmp/kpm-embed"
+    private const val BACKUP_DIR = "/data/adb/kpm/backup"
+
+    private fun sh(cmd: String): Pair<Int, String> = try {
+        val r = Shell.cmd(cmd).exec()
+        Pair(r.code, (r.out + r.err).joinToString("\n").trim())
+    } catch (t: Throwable) {
+        Pair(-1, t.message ?: "error")
+    }
+
+    fun ensureTools(context: Context): String? = try {
+        val dir = File(BIN_DIR)
+        if (!dir.exists()) dir.mkdirs()
+        val items = listOf(
+            "kpm/kptools" to KTOOLS,
+            "kpm/kpimg" to KPIMG,
+            "kpm/magiskboot" to MAGISKBOOT,
+        )
+        for ((asset, dst) in items) {
+            val f = File(dst)
+            if (!f.exists() || f.length() == 0L) {
+                context.assets.open(asset).use { i ->
+                    f.outputStream().use { o -> i.copyTo(o) }
+                }
+                f.setExecutable(true, false)
+            }
+        }
+        null
+    } catch (t: Throwable) {
+        "释放 kptools/kpimg/magiskboot 失败：${t.message}"
+    }
+
+    fun embed(context: Context, moduleUri: Uri, onStep: (String) -> Unit = {}): String {
+        ensureTools(context)?.let { return it }
+
+        val log = StringBuilder()
+        fun step(msg: String) {
+            log.append(msg).append('\n')
+            onStep(msg)
+        }
+
+        val slot = sh("getprop ro.boot.slot_suffix").second.trim().ifBlank { "_a" }
+        val dev = "/dev/block/by-name/boot$slot"
+        step("目标分区：$dev")
+
+        val work = File(WORK)
+        work.deleteRecursively()
+        work.mkdirs()
+
+        val kpm = File(work, "module.kpm")
+        try {
+            context.contentResolver.openInputStream(moduleUri)?.use { i ->
+                kpm.outputStream().use { o -> i.copyTo(o) }
+            } ?: return "读取所选文件失败"
+        } catch (t: Throwable) {
+            return "读取所选文件失败：${t.message}"
+        }
+
+        val bootImg = File(work, "boot.img")
+        var (code, out) = sh("dd if=$dev of=${bootImg.absolutePath} bs=4096 2>&1")
+        step("读取 boot：code=$code")
+        if (code != 0 || !bootImg.exists()) return log.toString() + "读取 boot 失败：$out"
+
+        File(BACKUP_DIR).mkdirs()
+        val backup = File(BACKUP_DIR, "boot$slot-${System.currentTimeMillis()}.img")
+        bootImg.copyTo(backup, overwrite = true)
+        step("已备份：${backup.name}（${backup.length() / 1024 / 1024} MB）")
+
+        var r = sh("cd $WORK && $MAGISKBOOT unpack boot.img 2>&1")
+        step("解包：code=${r.first}")
+        if (r.first != 0 || !File(work, "kernel").exists()) {
+            return log.toString() + "解包失败：${r.second.take(400)}"
+        }
+
+        r = sh("cd $WORK && $KTOOLS -p -i kernel -k $KPIMG -M ${kpm.absolutePath} -T kpm -o kernel.new 2>&1")
+        step("打补丁 + 嵌入：code=${r.first}")
+        if (r.first != 0 || !File(work, "kernel.new").exists()) {
+            return log.toString() + "打补丁失败：${r.second.takeLast(600)}"
+        }
+
+        File(work, "kernel.new").renameTo(File(work, "kernel"))
+
+        val newBoot = File(work, "new-boot.img")
+        newBoot.delete()
+        r = sh("cd $WORK && $MAGISKBOOT repack boot.img new-boot.img 2>&1")
+        step("重打包：code=${r.first}")
+        if (r.first != 0 || !newBoot.exists() || newBoot.length() < 1024 * 1024) {
+            return log.toString() + "重打包失败：${r.second.take(400)}"
+        }
+
+        r = sh("dd if=${newBoot.absolutePath} of=$dev bs=4096 2>&1")
+        step("写入分区：code=${r.first}")
+        if (r.first != 0) return log.toString() + "写入失败：${r.second.take(400)}"
+
+        sync()
+        step("完成，重启后由内核直接加载该模块")
+        return log.toString()
+    }
+
+    private fun sync() {
+        sh("sync")
     }
 }
 ''')
