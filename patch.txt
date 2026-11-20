@@ -285,7 +285,9 @@ object KpmBridge {
 ''')
 open(kd+'/KpmPage.kt','w').write(r'''package org.bakasu.bakasu.ui.screen.kpm
 
+import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -309,6 +311,7 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
@@ -341,6 +344,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private fun displayName(context: Context, uri: Uri): String = try {
+    context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+        val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (idx >= 0 && c.moveToFirst()) c.getString(idx) else ""
+    } ?: ""
+} catch (t: Throwable) {
+    ""
+}
+
 @Composable
 fun KpmPage(bottomPadding: Dp) {
     val context = LocalContext.current
@@ -355,6 +367,10 @@ fun KpmPage(bottomPadding: Dp) {
     var controlParam by remember { mutableStateOf("") }
     var refresh by remember { mutableStateOf(0) }
 
+    // 待嵌入的模块：选中后不立即修补，等点「开始修补」
+    var pendingEmbed by remember { mutableStateOf<Uri?>(null) }
+    var pendingName by remember { mutableStateOf("") }
+
     LaunchedEffect(refresh) {
         modules = withContext(Dispatchers.IO) { KpmBridge.installed() }
     }
@@ -368,8 +384,7 @@ fun KpmPage(bottomPadding: Dp) {
                     tmp.outputStream().use { out -> input.copyTo(out) }
                 }
                 val name = KpmBridge.persist(tmp) ?: return@withContext "保存失败"
-                val r = KpmBridge.load(name)
-                "load: " + r.ifBlank { "ok" }
+                "load: " + KpmBridge.load(name).ifBlank { "ok" }
             } catch (t: Throwable) {
                 "失败: ${t.message}"
             }
@@ -383,9 +398,11 @@ fun KpmPage(bottomPadding: Dp) {
         if (uri != null) importFrom(uri)
     }
 
-    var embedUri by remember { mutableStateOf<Uri?>(null) }
     val embedPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) embedUri = uri
+        if (uri != null) {
+            pendingEmbed = uri
+            pendingName = displayName(context, uri).ifBlank { "已选择文件" }
+        }
     }
 
     Scaffold(
@@ -399,22 +416,14 @@ fun KpmPage(bottomPadding: Dp) {
                     DropdownMenuItem(
                         modifier = Modifier.fillMaxWidth(),
                         text = {
-                            Text(
-                                "加载",
-                                modifier = Modifier.fillMaxWidth(),
-                                textAlign = TextAlign.Center,
-                            )
+                            Text("加载", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
                         },
                         onClick = { menuOpen = false; picker.launch(arrayOf("*/*")) },
                     )
                     DropdownMenuItem(
                         modifier = Modifier.fillMaxWidth(),
                         text = {
-                            Text(
-                                "嵌入",
-                                modifier = Modifier.fillMaxWidth(),
-                                textAlign = TextAlign.Center,
-                            )
+                            Text("嵌入", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
                         },
                         onClick = { menuOpen = false; embedPicker.launch(arrayOf("*/*")) },
                     )
@@ -432,6 +441,45 @@ fun KpmPage(bottomPadding: Dp) {
             }
 
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+
+            // 已选择待嵌入的文件：只有点这里才真正修补
+            pendingEmbed?.let { uri ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("待嵌入", style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            pendingName,
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.size(8.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TextButton(onClick = { pendingEmbed = null; pendingName = "" }) {
+                                Text("取消")
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Button(onClick = {
+                                pendingEmbed = null
+                                scope.launch {
+                                    busy = true
+                                    output = withContext(Dispatchers.IO) { KpmEmbed.embed(context, uri) }
+                                    showOutput = true
+                                    busy = false
+                                }
+                            }) { Text("开始修补") }
+                        }
+                    }
+                }
+            }
 
             if (modules.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -570,34 +618,6 @@ fun KpmPage(bottomPadding: Dp) {
         )
     }
 
-    val pendingEmbed = embedUri
-    if (pendingEmbed != null) {
-        AlertDialog(
-            onDismissRequest = { embedUri = null },
-            title = { Text("嵌入") },
-            text = {
-                Text(
-                    "将把所选模块写入 boot 分区，重启后由内核直接加载。\n" +
-                        "写入前会自动备份当前 boot 到 /data/adb/kpm/backup/。\n" +
-                        "需要重启生效；失败可能无法开机。确认继续？",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    embedUri = null
-                    scope.launch {
-                        busy = true
-                        output = withContext(Dispatchers.IO) { KpmEmbed.embed(context, pendingEmbed) }
-                        showOutput = true
-                        busy = false
-                    }
-                }) { Text("确认写入") }
-            },
-            dismissButton = { TextButton(onClick = { embedUri = null }) { Text("取消") } },
-        )
-    }
-
     if (showOutput) {
         AlertDialog(
             onDismissRequest = { showOutput = false },
@@ -625,7 +645,7 @@ import java.io.File
  *   dd new-boot.img → boot_<slot>
  *
  * 二进制（assets/kpm/{kptools,kpimg,magiskboot}）首次使用时释放到 /data/adb/ksu/bin。
- * 写回前会自动把当前 boot 备份到 /data/adb/kpm/backup/。
+ * 不自动备份（由用户自行负责）。
  */
 object KpmEmbed {
     private const val BIN_DIR = "/data/adb/ksu/bin"
@@ -633,7 +653,6 @@ object KpmEmbed {
     private const val KPIMG = "$BIN_DIR/kpimg"
     private const val MAGISKBOOT = "$BIN_DIR/magiskboot"
     private const val WORK = "/data/local/tmp/kpm-embed"
-    private const val BACKUP_DIR = "/data/adb/kpm/backup"
 
     private fun sh(cmd: String): Pair<Int, String> = try {
         val r = Shell.cmd(cmd).exec()
@@ -694,11 +713,6 @@ object KpmEmbed {
         var (code, out) = sh("dd if=$dev of=${bootImg.absolutePath} bs=4096 2>&1")
         step("读取 boot：code=$code")
         if (code != 0 || !bootImg.exists()) return log.toString() + "读取 boot 失败：$out"
-
-        File(BACKUP_DIR).mkdirs()
-        val backup = File(BACKUP_DIR, "boot$slot-${System.currentTimeMillis()}.img")
-        bootImg.copyTo(backup, overwrite = true)
-        step("已备份：${backup.name}（${backup.length() / 1024 / 1024} MB）")
 
         var r = sh("cd $WORK && $MAGISKBOOT unpack boot.img 2>&1")
         step("解包：code=${r.first}")
