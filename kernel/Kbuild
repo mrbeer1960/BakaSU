@@ -13,7 +13,6 @@ kernelsu-objs += hook/setuid_hook.o
 
 ifndef CONFIG_KSU_DISABLE_MANAGER
 kernelsu-objs += feature/dynamic_manager.o
-kernelsu-objs += feature/kpm.o
 kernelsu-objs += manager/apk_sign.o
 kernelsu-objs += manager/throne_tracker.o
 kernelsu-objs += manager/manager.o
