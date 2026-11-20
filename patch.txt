@@ -191,78 +191,81 @@ kd='app/src/main/java/org/bakasu/bakasu/ui/screen/kpm'
 os.makedirs(kd,exist_ok=True)
 open(kd+'/KpmBridge.kt','w').write(r'''package org.bakasu.bakasu.ui.screen.kpm
 
-import android.content.Context
 import com.topjohnwu.superuser.Shell
 import java.io.File
 
+/** 一个已安装的内核模块 */
+data class KpmModule(
+    val name: String,
+    val version: String = "",
+    val author: String = "",
+    val args: String = "",
+    val description: String = "",
+    val loaded: Boolean = false,
+)
+
 /**
- * 内置 KPM 后端桥接（方案 B）：
- *  - kpatch 由 APK assets 提供，首次使用时释放到 /data/adb/ksu/bin/kpatch
- *    （app 私有目录被 SELinux 禁止 exec，这个目录可以）
- *  - 模块文件只放 /data/adb/kpm/kpm/，除此之外不留任何东西
+ * KPM 前端桥接：全部走 ksud 的 kpm 子命令（ksud 直接和内核里的 kpatch 通信）。
+ * 不再需要任何外部二进制。
  */
 object KpmBridge {
-    const val MODULE_DIR = "/data/adb/kpm/kpm"
-    private const val BIN_DIR = "/data/adb/ksu/bin"
-    private const val BIN = "$BIN_DIR/kpatch"
+    private const val KSUD = "/data/adb/ksud"
+    const val MODULE_DIR = "/data/adb/kpm"
 
-    @Volatile
-    private var binReady = false
-
-    fun ensureBin(context: Context): Boolean {
-        if (binReady) return true
-        val target = File(BIN)
-        return try {
-            if (!target.exists() || target.length() == 0L) {
-                val dir = File(BIN_DIR)
-                if (!dir.exists()) dir.mkdirs()
-                context.assets.open("kpm/kpatch").use { input ->
-                    target.outputStream().use { out -> input.copyTo(out) }
-                }
-                target.setExecutable(true, false)
-            }
-            binReady = target.exists()
-            binReady
-        } catch (t: Throwable) {
-            target.exists()
-        }
-    }
-
-    private fun run(cmd: String): String = try {
-        val r = Shell.cmd(cmd).exec()
+    private fun run(args: List<String>): String = try {
+        val r = Shell.cmd((listOf(KSUD) + args).joinToString(" ")).exec()
         (r.out + r.err).joinToString("\n").trim()
     } catch (t: Throwable) {
         t.message ?: "error"
     }
 
-    fun hello(context: Context): Boolean {
-        if (!ensureBin(context)) return false
-        return run("$BIN hello") == "hello2026"
+    /** 内核里是否有可用的 kpatch（ksud kpm nums 能跑通即算） */
+    fun available(): Boolean = try {
+        val out = run(listOf("kpm", "nums"))
+        out.isNotEmpty() && !out.contains("failed") && !out.contains("not")
+    } catch (t: Throwable) {
+        false
     }
 
-    /** 已安装（管理器里放着的）模块名 */
-    fun installed(): List<String> {
-        val dir = File(MODULE_DIR)
-        val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".kpm") } ?: return emptyList()
-        return files.map { it.name.removeSuffix(".kpm") }.sorted()
-    }
-
-    /** 内核里当前已加载的模块名 */
-    fun loaded(): Set<String> = run("$BIN kpm list")
+    private fun loadedNames(): Set<String> = run(listOf("kpm", "list"))
         .lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 
-    fun load(name: String): String = run("$BIN kpm load '$MODULE_DIR/$name.kpm'")
+    /** 解析 ksud kpm info 的 key=value 输出 */
+    private fun parseInfo(name: String, loaded: Set<String>): KpmModule {
+        val fields = HashMap<String, String>()
+        run(listOf("kpm", "info", name)).lines().forEach { line ->
+            val idx = line.indexOf('=')
+            if (idx > 0) {
+                fields[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
+            }
+        }
+        return KpmModule(
+            name = name,
+            version = fields["version"].orEmpty(),
+            author = fields["author"].orEmpty(),
+            args = fields["args"].orEmpty(),
+            description = fields["description"].orEmpty(),
+            loaded = loaded.contains(name),
+        )
+    }
 
-    fun unload(name: String): String = run("$BIN kpm unload '$name'")
+    /** 已安装（/data/adb/kpm 里放着）的模块列表 */
+    fun installed(): List<KpmModule> {
+        val dir = File(MODULE_DIR)
+        val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".kpm") } ?: return emptyList()
+        val loaded = loadedNames()
+        return files.map { parseInfo(it.name.removeSuffix(".kpm"), loaded) }.sortedBy { it.name }
+    }
 
-    fun info(name: String): String = run("$BIN kpm info '$name'")
+    fun load(name: String): String = run(listOf("kpm", "load", "$MODULE_DIR/$name.kpm"))
 
-    /** 控制模块（对应 kpatch kpm ctl0），参数为空时只打印帮助 */
+    fun unload(name: String): String = run(listOf("kpm", "unload", name))
+
     fun control(name: String, args: String): String =
-        run("$BIN kpm ctl0 '$name' $args")
+        run(listOf("kpm", "control", name, args)).ifBlank { "ok" }
 
-    /** 把用户选中的文件放进模块目录，返回模块名 */
-    fun persist(context: Context, src: File): String? {
+    /** 把用户选的文件放进模块目录，返回模块名 */
+    fun persist(src: File): String? {
         val name = src.name.removeSuffix(".kpm").ifBlank { "module-${System.currentTimeMillis()}" }
         return try {
             val dir = File(MODULE_DIR)
@@ -307,11 +310,15 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -335,61 +342,76 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 列表项：模块名 + 是否已加载 */
-private data class KpmItem(val name: String, val loaded: Boolean)
-
 @Composable
 fun KpmPage(bottomPadding: Dp) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var modules by remember { mutableStateOf(emptyList<KpmItem>()) }
+    var modules by remember { mutableStateOf(emptyList<KpmModule>()) }
     var busy by remember { mutableStateOf(false) }
     var output by remember { mutableStateOf("") }
     var showOutput by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
     var controlTarget by remember { mutableStateOf<String?>(null) }
     var controlParam by remember { mutableStateOf("") }
     var refresh by remember { mutableStateOf(0) }
 
     LaunchedEffect(refresh) {
-        val loadedNames = withContext(Dispatchers.IO) {
-            if (KpmBridge.hello(context)) KpmBridge.loaded() else emptySet()
-        }
-        modules = withContext(Dispatchers.IO) {
-            KpmBridge.installed().map { KpmItem(it, loadedNames.contains(it)) }
-        }
+        modules = withContext(Dispatchers.IO) { KpmBridge.installed() }
     }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        if (uri != null) scope.launch {
-            busy = true
-            output = withContext(Dispatchers.IO) {
-                try {
-                    val tmp = File(context.cacheDir, "import-${System.currentTimeMillis()}.kpm")
-                    context.contentResolver.openInputStream(uri)?.use { input ->
-                        tmp.outputStream().use { out -> input.copyTo(out) }
-                    }
-                    val name = KpmBridge.persist(context, tmp) ?: return@withContext "保存失败"
-                    "load: " + KpmBridge.load(name).ifBlank { "ok" }
-                } catch (t: Throwable) {
-                    "失败: ${t.message}"
+    fun importFrom(uri: Uri) = scope.launch {
+        busy = true
+        output = withContext(Dispatchers.IO) {
+            try {
+                val tmp = File(context.cacheDir, "import-${System.currentTimeMillis()}.kpm")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    tmp.outputStream().use { out -> input.copyTo(out) }
+                }
+                val name = KpmBridge.persist(tmp) ?: return@withContext "保存失败"
+                val r = KpmBridge.load(name)
+                "load: " + r.ifBlank { "ok" }
+            } catch (t: Throwable) {
+                "失败: ${t.message}"
+            }
+        }
+        showOutput = true
+        busy = false
+        refresh++
+    }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importFrom(uri)
+    }
+
+    Scaffold(
+        modifier = Modifier.fillMaxSize().padding(bottom = bottomPadding),
+        floatingActionButton = {
+            Box {
+                FloatingActionButton(onClick = { menuOpen = true }) {
+                    Icon(Icons.Rounded.Add, "添加")
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("加载") },
+                        onClick = { menuOpen = false; picker.launch(arrayOf("*/*")) },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("嵌入 boot（暂不支持）") },
+                        enabled = false,
+                        onClick = { },
+                    )
                 }
             }
-            showOutput = true
-            busy = false
-            refresh++
-        }
-    }
-
-    Box(Modifier.fillMaxSize().padding(bottom = bottomPadding)) {
-        Column(Modifier.fillMaxSize()) {
+        },
+    ) { inner ->
+        Column(Modifier.fillMaxSize().padding(inner)) {
             Row(
-                Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 8.dp),
+                Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("内核模块", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                 IconButton(onClick = { refresh++ }) { Icon(Icons.Rounded.Refresh, "刷新") }
-                IconButton(onClick = { picker.launch(arrayOf("*/*")) }) { Icon(Icons.Rounded.Add, "添加") }
             }
 
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -406,7 +428,7 @@ fun KpmPage(bottomPadding: Dp) {
             } else {
                 LazyColumn(
                     Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
+                    contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     items(modules) { module ->
@@ -416,63 +438,85 @@ fun KpmPage(bottomPadding: Dp) {
                             tonalElevation = 1.dp,
                             shape = RoundedCornerShape(20.dp),
                         ) {
-                            Row(
-                                Modifier.padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(
-                                    Icons.Rounded.Archive, null,
-                                    Modifier.size(24.dp),
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                                Spacer(Modifier.width(12.dp))
-                                Column(
-                                    Modifier.weight(1f),
-                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                            Column(Modifier.padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Rounded.Archive, null,
+                                        Modifier.size(24.dp),
+                                        tint = MaterialTheme.colorScheme.primary,
+                                    )
+                                    Spacer(Modifier.width(12.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            module.name,
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            buildString {
+                                                if (module.version.isNotEmpty()) append(module.version)
+                                                if (module.author.isNotEmpty()) {
+                                                    if (isNotEmpty()) append(", ")
+                                                    append("作者 ").append(module.author)
+                                                }
+                                                if (isEmpty()) append(if (module.loaded) "已加载" else "未加载")
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        Text(
+                                            "参数: " + module.args.ifBlank { "(null)" },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                if (module.description.isNotEmpty()) {
+                                    Spacer(Modifier.size(8.dp))
+                                    Text(
+                                        module.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End,
+                                    verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    Text(
-                                        module.name,
-                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    Text(
-                                        if (module.loaded) "已加载" else "未加载",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (module.loaded) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                if (module.loaded) {
-                                    IconButton(onClick = {
-                                        controlTarget = module.name
-                                        controlParam = ""
-                                    }) { Icon(Icons.Rounded.Terminal, "控制") }
-                                }
-                                TextButton(onClick = {
-                                    scope.launch {
-                                        busy = true
-                                        output = withContext(Dispatchers.IO) {
-                                            if (module.loaded) KpmBridge.unload(module.name) else KpmBridge.load(module.name)
-                                        }.ifBlank { if (module.loaded) "已卸载" else "已加载" }
-                                        showOutput = true
-                                        busy = false
-                                        refresh++
-                                    }
-                                }) {
-                                    Text(if (module.loaded) "卸载" else "加载")
-                                }
-                                IconButton(onClick = {
-                                    scope.launch {
-                                        busy = true
-                                        withContext(Dispatchers.IO) {
-                                            if (module.loaded) KpmBridge.unload(module.name)
-                                            KpmBridge.remove(module.name)
+                                    if (module.loaded) {
+                                        TextButton(onClick = {
+                                            controlTarget = module.name
+                                            controlParam = ""
+                                        }) {
+                                            Icon(Icons.Rounded.Terminal, null, Modifier.size(18.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text("控制")
                                         }
-                                        busy = false
-                                        refresh++
                                     }
-                                }) { Icon(Icons.Rounded.DeleteOutline, "移除") }
+                                    TextButton(onClick = {
+                                        scope.launch {
+                                            busy = true
+                                            output = withContext(Dispatchers.IO) { KpmBridge.unload(module.name) }
+                                                .ifBlank { "已卸载 ${module.name}" }
+                                            showOutput = true
+                                            busy = false
+                                            refresh++
+                                        }
+                                    }) { Text("卸载") }
+                                    IconButton(onClick = {
+                                        scope.launch {
+                                            busy = true
+                                            withContext(Dispatchers.IO) {
+                                                if (module.loaded) KpmBridge.unload(module.name)
+                                                KpmBridge.remove(module.name)
+                                            }
+                                            busy = false
+                                            refresh++
+                                        }
+                                    }) { Icon(Icons.Rounded.DeleteOutline, "移除") }
+                                }
                             }
                         }
                     }
@@ -500,7 +544,6 @@ fun KpmPage(bottomPadding: Dp) {
                     scope.launch {
                         busy = true
                         output = withContext(Dispatchers.IO) { KpmBridge.control(target, controlParam) }
-                            .ifBlank { "ok" }
                         showOutput = true
                         busy = false
                     }
@@ -521,3 +564,187 @@ fun KpmPage(bottomPadding: Dp) {
 }
 ''')
 print('kpm sources ok')
+
+# ---------- ksud: 内置 kpm 子命令（直接 supercall） + 开机自动加载 ----------
+ku='../userspace/ksud/src/android'
+if os.path.isdir(ku):
+    open(ku+'/kpm.rs','w').write(r'''//! KPM support for ksud — talks to the in-kernel kpatch loader directly.
+//!
+//! No helper binary is involved: everything goes through KernelPatch's
+//! "supercall" (syscall 45). Root/su uid is enough, no superkey required.
+
+use anyhow::{anyhow, Result};
+use libc::{c_char, c_long, syscall};
+use log::{info, warn};
+use std::ffi::CString;
+use std::fs;
+
+/// KernelPatch supercall syscall number
+const NR_SUPERCALL: c_long = 45;
+
+const CMD_LOAD: c_long = 0x1020;
+const CMD_UNLOAD: c_long = 0x1021;
+const CMD_CONTROL: c_long = 0x1022;
+const CMD_NUMS: c_long = 0x1030;
+const CMD_LIST: c_long = 0x1031;
+const CMD_INFO: c_long = 0x1032;
+
+/// Must match the kpatch build inside the kernel (KPatch-Next version)
+const KP_MAJOR: u32 = 0;
+const KP_MINOR: u32 = 13;
+const KP_PATCH: u32 = 5;
+
+/// directory that holds *.kpm modules
+const KPM_DIR: &str = "/data/adb/kpm";
+
+fn ver_and_cmd(cmd: c_long) -> c_long {
+    let v = ((KP_MAJOR << 16) | (KP_MINOR << 8) | KP_PATCH) as c_long;
+    (v << 32) | (0x1158 << 16) | (cmd & 0xFFFF)
+}
+
+fn sc(cmd: c_long, a1: c_long, a2: c_long, a3: c_long) -> c_long {
+    let key = CString::new("su").unwrap_or_default();
+    unsafe { syscall(NR_SUPERCALL, key.as_ptr(), ver_and_cmd(cmd), a1, a2, a3) as c_long }
+}
+
+fn loaded_list() -> Vec<String> {
+    let mut buf = vec![0u8; 8192];
+    let ret = sc(
+        CMD_LIST,
+        buf.as_mut_ptr() as c_long,
+        buf.len() as c_long,
+        0,
+    );
+    if ret < 0 {
+        return Vec::new();
+    }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(0);
+    String::from_utf8_lossy(&buf[..len])
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+pub fn nums() -> Result<()> {
+    let n = sc(CMD_NUMS, 0, 0, 0);
+    if n < 0 {
+        return Err(anyhow!("KPM_NUMS failed: {n}"));
+    }
+    println!("{n}");
+    Ok(())
+}
+
+pub fn list() -> Result<()> {
+    let list = loaded_list();
+    for name in list {
+        println!("{name}");
+    }
+    Ok(())
+}
+
+pub fn load(path: &str) -> Result<()> {
+    let c_path = CString::new(path).map_err(|_| anyhow!("invalid path"))?;
+    let ret = sc(CMD_LOAD, c_path.as_ptr() as c_long, 0, 0);
+    if ret < 0 {
+        return Err(anyhow!("KPM_LOAD failed: {ret}"));
+    }
+    Ok(())
+}
+
+pub fn unload(name: &str) -> Result<()> {
+    let c_name = CString::new(name).map_err(|_| anyhow!("invalid name"))?;
+    let ret = sc(CMD_UNLOAD, c_name.as_ptr() as c_long, 0, 0);
+    if ret < 0 {
+        return Err(anyhow!("KPM_UNLOAD failed: {ret}"));
+    }
+    Ok(())
+}
+
+pub fn info(name: &str) -> Result<()> {
+    let c_name = CString::new(name).map_err(|_| anyhow!("invalid name"))?;
+    let mut buf = vec![0u8; 4096];
+    let ret = sc(
+        CMD_INFO,
+        c_name.as_ptr() as c_long,
+        buf.as_mut_ptr() as c_long,
+        buf.len() as c_long,
+    );
+    if ret < 0 {
+        return Err(anyhow!("KPM_INFO failed: {ret}"));
+    }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(0);
+    print!("{}", String::from_utf8_lossy(&buf[..len]));
+    Ok(())
+}
+
+pub fn control(name: &str, args: &str) -> Result<()> {
+    let c_name = CString::new(name).map_err(|_| anyhow!("invalid name"))?;
+    let c_args = CString::new(args).unwrap_or_default();
+    let mut out = vec![0u8; 4096];
+    let ret = sc(
+        CMD_CONTROL,
+        c_name.as_ptr() as c_long,
+        c_args.as_ptr() as c_long,
+        out.as_mut_ptr() as c_long,
+    );
+    let len = out.iter().position(|&b| b == 0).unwrap_or(0);
+    let text = String::from_utf8_lossy(&out[..len]).to_string();
+    if !text.is_empty() {
+        print!("{text}");
+    }
+    if ret < 0 {
+        return Err(anyhow!("KPM_CONTROL failed: {ret}"));
+    }
+    Ok(())
+}
+
+/// Load every module in KPM_DIR that is not loaded yet.
+/// Called from the `services` boot stage so ksud owns kpm autoload.
+pub fn autoload() -> Result<()> {
+    let loaded = loaded_list();
+    let entries = match fs::read_dir(KPM_DIR) {
+        Ok(e) => e,
+        Err(_) => return Ok(()),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("kpm") {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if name.is_empty() || loaded.iter().any(|l| *l == name) {
+            continue;
+        }
+        match load(path.to_str().unwrap_or("")) {
+            Ok(()) => info!("kpm: loaded {name}"),
+            Err(e) => warn!("kpm: load {name} failed: {e}"),
+        }
+    }
+    Ok(())
+}
+''')
+    m=open(ku+'/mod.rs').read()
+    if 'mod kpm;' not in m:
+        m=m.replace('mod init_event;','mod init_event;\nmod kpm;',1)
+        open(ku+'/mod.rs','w').write(m)
+    c=open(ku+'/cli.rs').read()
+    if 'KpmOp' not in c:
+        a1='\n'.join(['    /// Trigger `post-fs-data` event','    PostFsData,'])
+        n1='\n'.join(['    /// Manage kernel patch modules (KPM)','    Kpm {','        #[command(subcommand)]','        command: KpmOp,','    },','','    /// Trigger `post-fs-data` event','    PostFsData,'])
+        c=c.replace(a1,n1,1)
+        a2='#[derive(clap::Subcommand, Debug)]\nenum Module {'
+        n2='\n'.join(['#[derive(clap::Subcommand, Debug)]','enum KpmOp {','    Load { path: String },','    Unload { name: String },','    List,','    Num,','    Info { name: String },','    Control { name: String, args: String },','    Autoload,','}','','#[derive(clap::Subcommand, Debug)]','enum Module {'])
+        c=c.replace(a2,n2,1)
+        a3='        Commands::Services => {'
+        n3='\n'.join(['        Commands::Kpm { command } => match command {','            KpmOp::List => crate::android::kpm::list(),','            KpmOp::Num => crate::android::kpm::nums(),','            KpmOp::Load { path } => crate::android::kpm::load(&path),','            KpmOp::Unload { name } => crate::android::kpm::unload(&name),','            KpmOp::Info { name } => crate::android::kpm::info(&name),','            KpmOp::Control { name, args } => crate::android::kpm::control(&name, &args),','            KpmOp::Autoload => crate::android::kpm::autoload(),','        },','        Commands::Services => {'])
+        c=c.replace(a3,n3,1)
+        a4='            init_event::on_services();'
+        n4='\n'.join(['            init_event::on_services();','            if let Err(e) = crate::android::kpm::autoload() {','                log::warn!("kpm autoload failed: {e}");','            }'])
+        c=c.replace(a4,n4,1)
+        open(ku+'/cli.rs','w').write(c)
+    print('ksud kpm ok')
