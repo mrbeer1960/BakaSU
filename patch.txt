@@ -97,7 +97,7 @@ print('action back ok')
 
 p5=b+'/BottomBarDestination.kt'
 o5=open(p5).read()
-if 'Icons.Filled.Home' not in o5 and 'Icons.TwoTone.Home' not in o5:sys.exit('bbd miss')
+if 'Icons.TwoTone.Home' not in o5 and 'Icons.Filled.Home' not in o5:sys.exit('bbd miss')
 open(p5,'w').write('''package org.bakasu.bakasu.ui.screen
 
 import androidx.annotation.StringRes
@@ -105,18 +105,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.SystemUpdateAlt
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.outlined.AdminPanelSettings
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.SystemUpdateAlt
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import org.bakasu.bakasu.R
-import org.bakasu.bakasu.ui.screen.kpm.KpmAvailability
 import org.bakasu.bakasu.ui.screen.kpm.KpmPage
 import org.bakasu.bakasu.ui.screen.main.HomePage
 import org.bakasu.bakasu.ui.screen.main.ModulePage
@@ -137,18 +136,18 @@ enum class BottomBarDestination(
         Icons.Outlined.Home,
         false,
     ),
+    KernelModule(
+        { bottomPadding -> KpmPage(bottomPadding) },
+        R.string.kpm_title,
+        Icons.Filled.Archive,
+        Icons.Outlined.Archive,
+        true,
+    ),
     SuperUser(
         { bottomPadding -> SuperUserPage(bottomPadding) },
         R.string.superuser,
         Icons.Filled.AdminPanelSettings,
         Icons.Outlined.AdminPanelSettings,
-        true,
-    ),
-    KernelModule(
-        { bottomPadding -> KpmPage(bottomPadding) },
-        R.string.kpm_title,
-        Icons.Filled.SystemUpdateAlt,
-        Icons.Outlined.SystemUpdateAlt,
         true,
     ),
     Module(
@@ -168,12 +167,13 @@ enum class BottomBarDestination(
     ;
 
     companion object {
-        fun getPages(isKsuValid: Boolean): List<BottomBarDestination> =
-            BottomBarDestination.entries.filter { entry ->
-                if (!isKsuValid && entry.rootRequired) return@filter false
-                if (entry == KernelModule && !KpmAvailability.available) return@filter false
-                true
+        fun getPages(isKsuValid: Boolean): List<BottomBarDestination> = if (isKsuValid) {
+            BottomBarDestination.entries.toList()
+        } else {
+            BottomBarDestination.entries.filter {
+                !it.rootRequired
             }
+        }
     }
 }
 ''')
@@ -191,16 +191,42 @@ kd='app/src/main/java/org/bakasu/bakasu/ui/screen/kpm'
 os.makedirs(kd,exist_ok=True)
 open(kd+'/KpmBridge.kt','w').write(r'''package org.bakasu.bakasu.ui.screen.kpm
 
-import java.io.File
+import android.content.Context
 import com.topjohnwu.superuser.Shell
+import java.io.File
 
 /**
- * 内置 KPM 后端桥接：所有操作都走 /data/adb/kpm/bin/kpatch
- *   hello / kpm num / kpm list / kpm load <path> / kpm unload <name> / kpm info <name>
+ * 内置 KPM 后端桥接（方案 B）：
+ *  - kpatch 由 APK assets 提供，首次使用时释放到 /data/adb/ksu/bin/kpatch
+ *    （app 私有目录被 SELinux 禁止 exec，这个目录可以）
+ *  - 模块文件只放 /data/adb/kpm/kpm/，除此之外不留任何东西
  */
 object KpmBridge {
-    const val BIN = "/data/adb/kpm/bin/kpatch"
     const val MODULE_DIR = "/data/adb/kpm/kpm"
+    private const val BIN_DIR = "/data/adb/ksu/bin"
+    private const val BIN = "$BIN_DIR/kpatch"
+
+    @Volatile
+    private var binReady = false
+
+    fun ensureBin(context: Context): Boolean {
+        if (binReady) return true
+        val target = File(BIN)
+        return try {
+            if (!target.exists() || target.length() == 0L) {
+                val dir = File(BIN_DIR)
+                if (!dir.exists()) dir.mkdirs()
+                context.assets.open("kpm/kpatch").use { input ->
+                    target.outputStream().use { out -> input.copyTo(out) }
+                }
+                target.setExecutable(true, false)
+            }
+            binReady = target.exists()
+            binReady
+        } catch (t: Throwable) {
+            target.exists()
+        }
+    }
 
     private fun run(cmd: String): String = try {
         val r = Shell.cmd(cmd).exec()
@@ -209,32 +235,49 @@ object KpmBridge {
         t.message ?: "error"
     }
 
-    fun available(): Boolean = run("$BIN hello") == "hello2026"
+    fun hello(context: Context): Boolean {
+        if (!ensureBin(context)) return false
+        return run("$BIN hello") == "hello2026"
+    }
 
-    fun list(): List<String> = run("$BIN kpm list")
-        .lines().map { it.trim() }.filter { it.isNotEmpty() }
+    /** 已安装（管理器里放着的）模块名 */
+    fun installed(): List<String> {
+        val dir = File(MODULE_DIR)
+        val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".kpm") } ?: return emptyList()
+        return files.map { it.name.removeSuffix(".kpm") }.sorted()
+    }
 
-    fun info(name: String): String = run("$BIN kpm info '$name'")
+    /** 内核里当前已加载的模块名 */
+    fun loaded(): Set<String> = run("$BIN kpm list")
+        .lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 
-    fun load(path: String): String = run("$BIN kpm load '$path'")
+    fun load(name: String): String = run("$BIN kpm load '$MODULE_DIR/$name.kpm'")
 
     fun unload(name: String): String = run("$BIN kpm unload '$name'")
 
-    /** 复制到 /data/adb/kpm/kpm/，重启后由 kpm.sh 自动加载 */
-    fun persist(src: File): Boolean = try {
-        val dir = File(MODULE_DIR)
-        if (!dir.exists()) dir.mkdirs()
-        src.copyTo(File(dir, src.name), overwrite = true)
-        true
+    fun info(name: String): String = run("$BIN kpm info '$name'")
+
+    /** 控制模块（对应 kpatch kpm ctl0），参数为空时只打印帮助 */
+    fun control(name: String, args: String): String =
+        run("$BIN kpm ctl0 '$name' $args")
+
+    /** 把用户选中的文件放进模块目录，返回模块名 */
+    fun persist(context: Context, src: File): String? {
+        val name = src.name.removeSuffix(".kpm").ifBlank { "module-${System.currentTimeMillis()}" }
+        return try {
+            val dir = File(MODULE_DIR)
+            if (!dir.exists()) dir.mkdirs()
+            src.copyTo(File(dir, "$name.kpm"), overwrite = true)
+            name
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    fun remove(name: String): Boolean = try {
+        File(MODULE_DIR, "$name.kpm").delete()
     } catch (t: Throwable) {
         false
-    }
-}
-
-/** 只探测一次，供底栏决定要不要显示入口 */
-object KpmAvailability {
-    val available: Boolean by lazy {
-        runCatching { KpmBridge.available() }.getOrDefault(false)
     }
 }
 ''')
@@ -246,15 +289,19 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.SystemUpdateAlt
+import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -263,18 +310,29 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** 列表项：模块名 + 是否已加载 */
+private data class KpmItem(val name: String, val loaded: Boolean)
+
 @Composable
 fun KpmPage(bottomPadding: Dp) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var modules by remember { mutableStateOf(emptyList<String>()) }
+
+    var items by remember { mutableStateOf(emptyList<KpmItem>()) }
     var busy by remember { mutableStateOf(false) }
     var output by remember { mutableStateOf("") }
-    var showDialog by remember { mutableStateOf(false) }
+    var showOutput by remember { mutableStateOf(false) }
+    var controlTarget by remember { mutableStateOf<String?>(null) }
+    var controlParam by remember { mutableStateOf("") }
     var refresh by remember { mutableStateOf(0) }
 
     LaunchedEffect(refresh) {
-        modules = withContext(Dispatchers.IO) { KpmBridge.list() }
+        val loadedNames = withContext(Dispatchers.IO) {
+            if (KpmBridge.hello(context)) KpmBridge.loaded() else emptySet()
+        }
+        items = withContext(Dispatchers.IO) {
+            KpmBridge.installed().map { KpmItem(it, loadedNames.contains(it)) }
+        }
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -286,15 +344,13 @@ fun KpmPage(bottomPadding: Dp) {
                     context.contentResolver.openInputStream(uri)?.use { input ->
                         tmp.outputStream().use { out -> input.copyTo(out) }
                     }
-                    val loaded = KpmBridge.load(tmp.absolutePath)
-                    val saved = KpmBridge.persist(tmp)
-                    (if (saved) "已保存到 ${KpmBridge.MODULE_DIR}\n" else "保存失败\n") +
-                        "load: " + loaded.ifBlank { "ok" }
+                    val name = KpmBridge.persist(context, tmp) ?: return@withContext "保存失败"
+                    "load: " + KpmBridge.load(name).ifBlank { "ok" }
                 } catch (t: Throwable) {
                     "失败: ${t.message}"
                 }
             }
-            showDialog = true
+            showOutput = true
             busy = false
             refresh++
         }
@@ -303,95 +359,142 @@ fun KpmPage(bottomPadding: Dp) {
     Box(Modifier.fillMaxSize().padding(bottom = bottomPadding)) {
         Column(Modifier.fillMaxSize()) {
             Row(
-                Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
+                Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    Icons.Rounded.SystemUpdateAlt, null,
-                    Modifier.size(24.dp),
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("内核模块", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "已加载 ${modules.size} 个",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                IconButton(onClick = { refresh++ }) {
-                    Icon(Icons.Rounded.Refresh, "刷新")
-                }
-                IconButton(onClick = { picker.launch(arrayOf("*/*")) }) {
-                    Icon(Icons.Rounded.Add, "加载")
-                }
+                Text("内核模块", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                IconButton(onClick = { refresh++ }) { Icon(Icons.Rounded.Refresh, "刷新") }
+                IconButton(onClick = { picker.launch(arrayOf("*/*")) }) { Icon(Icons.Rounded.Add, "添加") }
             }
 
-            if (busy) {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-            }
+            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
 
-            if (modules.isEmpty()) {
+            if (items.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        "没有已加载的内核模块\n点右上角 + 选择 .kpm 文件",
+                        "暂无内核模块",
                         style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-            } else {
-                LazyColumn(
-                    Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(modules) { name ->
-                        Card(Modifier.fillMaxWidth()) {
-                            Row(
-                                Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
+                return@Column
+            }
+
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(items) { item ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 1.dp,
+                        shape = RoundedCornerShape(20.dp),
+                    ) {
+                        Row(
+                            Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.Rounded.Archive, null,
+                                Modifier.size(24.dp),
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(
+                                Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
                             ) {
                                 Text(
-                                    name,
-                                    Modifier.weight(1f),
-                                    style = MaterialTheme.typography.titleSmall,
-                                    maxLines = 1,
+                                    item.name,
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                 )
-                                TextButton(onClick = {
-                                    scope.launch {
-                                        output = withContext(Dispatchers.IO) { KpmBridge.info(name) }
-                                            .ifBlank { "（无输出）" }
-                                        showDialog = true
-                                    }
-                                }) { Text("详情") }
-                                TextButton(onClick = {
-                                    scope.launch {
-                                        busy = true
-                                        output = withContext(Dispatchers.IO) { KpmBridge.unload(name) }
-                                            .ifBlank { "已卸载 $name" }
-                                        showDialog = true
-                                        busy = false
-                                        refresh++
-                                    }
-                                }) { Text("卸载") }
+                                Text(
+                                    if (item.loaded) "已加载" else "未加载",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (item.loaded) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
+                            if (item.loaded) {
+                                IconButton(onClick = {
+                                    controlTarget = item.name
+                                    controlParam = ""
+                                }) { Icon(Icons.Rounded.Terminal, "控制") }
+                            }
+                            IconButton(onClick = {
+                                scope.launch {
+                                    busy = true
+                                    output = withContext(Dispatchers.IO) {
+                                        if (item.loaded) KpmBridge.unload(item.name) else KpmBridge.load(item.name)
+                                    }.ifBlank { if (item.loaded) "已卸载" else "已加载" }
+                                    showOutput = true
+                                    busy = false
+                                    refresh++
+                                }
+                            }) {
+                                Text(
+                                    if (item.loaded) "卸载" else "加载",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            IconButton(onClick = {
+                                scope.launch {
+                                    busy = true
+                                    withContext(Dispatchers.IO) {
+                                        if (item.loaded) KpmBridge.unload(item.name)
+                                        KpmBridge.remove(item.name)
+                                    }
+                                    busy = false
+                                    refresh++
+                                }
+                            }) { Icon(Icons.Rounded.DeleteOutline, "移除") }
                         }
                     }
-                    item { Spacer(Modifier.height(8.dp)) }
                 }
             }
         }
     }
 
-    if (showDialog) {
+    controlTarget?.let { name ->
         AlertDialog(
-            onDismissRequest = { showDialog = false },
+            onDismissRequest = { controlTarget = null },
+            title = { Text("控制 $name") },
+            text = {
+                OutlinedTextField(
+                    value = controlParam,
+                    onValueChange = { controlParam = it },
+                    label = { Text("参数") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    controlTarget = null
+                    scope.launch {
+                        busy = true
+                        output = withContext(Dispatchers.IO) { KpmBridge.control(name, controlParam) }
+                            .ifBlank { "ok" }
+                        showOutput = true
+                        busy = false
+                    }
+                }) { Text("确定") }
+            },
+            dismissButton = { TextButton(onClick = { controlTarget = null }) { Text("取消") } },
+        )
+    }
+
+    if (showOutput) {
+        AlertDialog(
+            onDismissRequest = { showOutput = false },
             title = { Text("输出") },
             text = { Text(output.ifBlank { "（无输出）" }, style = MaterialTheme.typography.bodySmall) },
-            confirmButton = {
-                TextButton(onClick = { showDialog = false }) { Text("关闭") }
-            },
+            confirmButton = { TextButton(onClick = { showOutput = false }) { Text("关闭") } },
         )
     }
 }
