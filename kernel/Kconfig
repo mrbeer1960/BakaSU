@@ -247,3 +247,10 @@ config KSU_SUSFS_SUS_MAP
 endmenu
 
 endmenu
+config KSU_KPM_ENABLED
+	bool "Built-in KPM (kernel patch module) support"
+	depends on KSU
+	default n
+	help
+	  Expose KSU_FEATURE_KPM to the manager so it can show the kernel
+	  patch module page. Requires a KPM loader backend.
