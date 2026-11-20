@@ -1,0 +1,37 @@
+name: Build Fixed
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch sources
+        run: |
+          cd manager
+          V=$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/version.txt")
+          sed -i "s/extra\[\"managerVersionCode\"\] = .*/extra[\"managerVersionCode\"] = $V/" build.gradle.kts
+          sed -i 's/extra\["managerVersionName"\] = .*/extra["managerVersionName"] = "v4.2.0-rc3"/' build.gradle.kts
+          sed -i 's/initialHeightOffset = -154f/initialHeightOffset = 0f/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/HomePage.kt
+          sed -i 's/if (state.showReboot) {/if (false) {/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
+          sed -i 's/TopAppBarDefaults.exitUntilCollapsedScrollBehavior/TopAppBarDefaults.pinnedScrollBehavior/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
+          sed -i 's/import androidx.compose.material3.LargeFlexibleTopAppBar/import androidx.compose.material3.LargeFlexibleTopAppBar\nimport androidx.compose.material3.CenterAlignedTopAppBar/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
+          sed -i 's/LargeFlexibleTopAppBar(/CenterAlignedTopAppBar(/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
+          sed -i 's/padding.calculateTopPadding() + 12.dp/padding.calculateTopPadding() + 16.dp/' app/src/main/java/org/bakasu/bakasu/ui/component/FlashOutputScreen.kt
+          sed -i 's/else -> "Built-in"/else -> "BUILT-IN（GKI2）"/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/HomePage.kt
+          sed -i 's/if (module.hasActionScript || module.hasWebUi) {/if (false) {/' app/src/main/java/org/bakasu/bakasu/ui/screen/main/ModulePage.kt
+          sed -i 's/    iconSize: Dp = 24.dp,/    iconSize: Dp = 24.dp, contentSpacing: Dp = 8.dp,/' app/src/main/java/org/bakasu/bakasu/ui/component/settings/SettingsBaseWidget.kt
+          sed -i 's/val spacing = 8.dp.roundToPx()/val spacing = contentSpacing.roundToPx()/' app/src/main/java/org/bakasu/bakasu/ui/component/settings/SettingsBaseWidget.kt
+          python3 "$GITHUB_WORKSPACE/patch.txt"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Build release
+        run: |
+          cd manager
+          chmod +x gradlew
+          ./gradlew assembleRelease -Pcommit=${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Manager-release
+          path: manager/app/build/outputs/apk/release/*.apk
