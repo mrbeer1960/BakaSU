@@ -521,7 +521,7 @@ fun KpmPage(bottomPadding: Dp) {
         scope.launch {
             busy = true
             val r = withContext(Dispatchers.IO) {
-                if (uris.isNullOrEmpty()) "未选择任何模块，已取消重新修补" else repatch(context, uris)
+                if (uris.isNullOrEmpty()) "未选择任何模块，已取消重新修补" else KpmEmbed.repatch(context, uris)
             }
             busy = false
             refresh++
@@ -570,7 +570,7 @@ fun KpmPage(bottomPadding: Dp) {
                                 moreOpen = false
                                 scope.launch {
                                     busy = true
-                                    val r = withContext(Dispatchers.IO) { repatch(context, emptyList()) }
+                                    val r = withContext(Dispatchers.IO) { KpmEmbed.repatch(context, emptyList()) }
                                     busy = false
                                     refresh++
                                     report(r, "已清空嵌入，重启后生效")
