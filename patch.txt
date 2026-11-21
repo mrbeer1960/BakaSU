@@ -342,15 +342,13 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Inventory
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -362,9 +360,9 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -374,18 +372,29 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import org.bakasu.bakasu.ui.component.SearchAppBar
+import org.bakasu.bakasu.ui.component.rememberSearchAppBarScrollBehavior
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.bakasu.bakasu.R
+
+private fun displayName(context: Context, uri: Uri): String = try {
+    context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+        val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (idx >= 0 && c.moveToFirst()) c.getString(idx) else ""
+    } ?: ""
+} catch (t: Throwable) {
+    ""
+}
 
 private fun copyToCache(context: Context, uri: Uri): File? = try {
     val tmp = File(context.cacheDir, "import-${System.currentTimeMillis()}.kpm")
@@ -397,6 +406,7 @@ private fun copyToCache(context: Context, uri: Uri): File? = try {
     null
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun KpmPage(bottomPadding: Dp) {
     val context = LocalContext.current
@@ -408,12 +418,19 @@ fun KpmPage(bottomPadding: Dp) {
     var showOutput by remember { mutableStateOf(false) }
     var refresh by remember { mutableStateOf(0) }
     var query by remember { mutableStateOf("") }
+    val topAppBarState = rememberTopAppBarState()
+    val scrollBehavior = rememberSearchAppBarScrollBehavior(
+        TopAppBarDefaults.exitUntilCollapsedScrollBehavior(topAppBarState)
+    )
     val snackbarHostState = remember { SnackbarHostState() }
     var embedUninstall by remember { mutableStateOf<String?>(null) }
 
-    // APatch 式：先选模式（嵌入 / 加载），再选文件
-    var menuOpen by remember { mutableStateOf(false) }
-    var pendingMode by remember { mutableStateOf("") }
+    // 先选文件，选完再问：嵌入 / 加载
+    var pendingUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingPath by remember { mutableStateOf("") }
+    var pendingFileName by remember { mutableStateOf("") }
+    var pendingModuleName by remember { mutableStateOf("") }
+    var showModeDialog by remember { mutableStateOf(false) }
 
     var controlTarget by remember { mutableStateOf<String?>(null) }
     var controlArgs by remember { mutableStateOf("") }
@@ -437,6 +454,33 @@ fun KpmPage(bottomPadding: Dp) {
         }
     }
 
+    fun stage(uri: Uri) {
+        scope.launch {
+            busy = true
+            val tmp = withContext(Dispatchers.IO) { copyToCache(context, uri) }
+            if (tmp == null) {
+                output = "读取文件失败"
+                showOutput = true
+                busy = false
+                return@launch
+            }
+            pendingUri = uri
+            pendingPath = tmp.absolutePath
+            pendingFileName = displayName(context, uri).ifBlank { tmp.name }
+            pendingModuleName = withContext(Dispatchers.IO) { KpmBridge.moduleName(tmp.absolutePath) }.orEmpty()
+            busy = false
+            showModeDialog = true
+        }
+    }
+
+    fun clearPending(deleteFile: Boolean) {
+        if (deleteFile && pendingPath.isNotEmpty()) File(pendingPath).delete()
+        pendingUri = null
+        pendingPath = ""
+        pendingFileName = ""
+        pendingModuleName = ""
+    }
+
     fun doEmbed(uri: Uri) {
         scope.launch {
             busy = true
@@ -453,19 +497,14 @@ fun KpmPage(bottomPadding: Dp) {
         }
     }
 
-    fun doLoad(uri: Uri) {
+    fun doLoad(path: String) {
         scope.launch {
             busy = true
             val r = withContext(Dispatchers.IO) {
                 try {
-                    val tmp = copyToCache(context, uri)
-                    if (tmp == null) {
-                        "失败: 读取文件失败"
-                    } else {
-                        val out = KpmBridge.load(tmp.absolutePath)
-                        tmp.delete()
-                        out
-                    }
+                    val out = KpmBridge.load(path)
+                    File(path).delete()
+                    out
                 } catch (t: Throwable) {
                     "失败: ${t.message}"
                 }
@@ -477,11 +516,7 @@ fun KpmPage(bottomPadding: Dp) {
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        val mode = pendingMode
-        pendingMode = ""
-        if (uri != null) {
-            if (mode == "embed") doEmbed(uri) else doLoad(uri)
-        }
+        if (uri != null) stage(uri)
     }
 
     val shown = modules.filter { m ->
@@ -490,76 +525,33 @@ fun KpmPage(bottomPadding: Dp) {
 
     Scaffold(
         modifier = Modifier.fillMaxSize().padding(bottom = bottomPadding),
+        topBar = {
+            SearchAppBar(
+                title = "内核模块",
+                searchText = query,
+                onSearchTextChange = { query = it },
+                dropdownContent = {
+                    IconButton(onClick = { refresh++ }) {
+                        Icon(Icons.Filled.Refresh, "刷新")
+                    }
+                },
+                scrollBehavior = scrollBehavior,
+                searchBarPlaceHolderText = "搜索模块",
+            )
+        },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
-            Column {
-                FloatingActionButton(
-                    onClick = { menuOpen = !menuOpen },
-                    shape = RoundedCornerShape(16.dp),
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                ) {
-                    Icon(painterResource(R.drawable.package_import), null)
-                }
-
-                MaterialTheme(
-                    shapes = MaterialTheme.shapes.copy(extraSmall = RoundedCornerShape(10.dp))
-                ) {
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text("嵌入") },
-                            onClick = {
-                                menuOpen = false
-                                pendingMode = "embed"
-                                picker.launch(arrayOf("*/*"))
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("加载") },
-                            onClick = {
-                                menuOpen = false
-                                pendingMode = "load"
-                                picker.launch(arrayOf("*/*"))
-                            },
-                        )
-                    }
-                }
+            FloatingActionButton(
+                onClick = { picker.launch(arrayOf("*/*")) },
+                shape = RoundedCornerShape(16.dp),
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            ) {
+                Icon(painterResource(R.drawable.package_import), null)
             }
         },
     ) { inner ->
         Column(Modifier.fillMaxSize().padding(inner)) {
-            Row(
-                Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "内核模块",
-                    style = MaterialTheme.typography.headlineLarge,
-                    modifier = Modifier.weight(1f),
-                )
-                IconButton(onClick = { refresh++ }) {
-                    Icon(Icons.Filled.Refresh, "刷新")
-                }
-            }
-
-            TextField(
-                value = query,
-                onValueChange = { query = it },
-                placeholder = { Text("搜索模块") },
-                leadingIcon = { Icon(Icons.Filled.Search, null) },
-                singleLine = true,
-                shape = RoundedCornerShape(28.dp),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    disabledIndicatorColor = Color.Transparent,
-                ),
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
 
             if (shown.isEmpty()) {
@@ -572,7 +564,7 @@ fun KpmPage(bottomPadding: Dp) {
                 }
             } else {
                 LazyColumn(
-                    Modifier.fillMaxSize(),
+                    Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
@@ -602,6 +594,75 @@ fun KpmPage(bottomPadding: Dp) {
                 }
             }
         }
+    }
+
+    if (showModeDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showModeDialog = false
+                clearPending(true)
+            },
+            title = {
+                Text("安装模式", style = MaterialTheme.typography.headlineSmall)
+            },
+            text = {
+                Column {
+                    Text(
+                        if (pendingModuleName.isNotEmpty()) "模块 $pendingModuleName" else "已选择 $pendingFileName",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                showModeDialog = false
+                                val u = pendingUri
+                                val p = pendingPath
+                                clearPending(false)
+                                if (p.isNotEmpty()) File(p).delete()
+                                if (u != null) doEmbed(u)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(
+                                Icons.Filled.Inventory, null,
+                                Modifier.size(18.dp).padding(end = 4.dp),
+                            )
+                            Text("嵌入")
+                        }
+                        Button(
+                            onClick = {
+                                showModeDialog = false
+                                val p = pendingPath
+                                clearPending(false)
+                                if (p.isNotEmpty()) doLoad(p)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(
+                                Icons.Filled.Download, null,
+                                Modifier.size(18.dp).padding(end = 4.dp),
+                            )
+                            Text("加载")
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                Column(
+                    Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Spacer(Modifier.height(16.dp))
+                    TextButton(onClick = {
+                        showModeDialog = false
+                        clearPending(true)
+                    }) { Text("取消") }
+                }
+            },
+            shape = MaterialTheme.shapes.extraLarge,
+        )
     }
 
     val removing = embedUninstall
@@ -705,7 +766,7 @@ private fun KpmModuleItem(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
-        Column(Modifier.padding(20.dp)) {
+        Column(Modifier.padding(16.dp)) {
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -717,7 +778,7 @@ private fun KpmModuleItem(
                         style = MaterialTheme.typography.titleLarge,
                     )
 
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(2.dp))
 
                     Text(
                         text = "版本: " + module.version.ifBlank { "-" },
@@ -746,15 +807,15 @@ private fun KpmModuleItem(
             }
 
             if (module.description.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(8.dp))
 
                 Text(
                     text = module.description,
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyMedium,
                 )
             }
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(16.dp))
 
             Row(
                 Modifier.fillMaxWidth(),
@@ -765,8 +826,8 @@ private fun KpmModuleItem(
                     enabled = module.loaded,
                     modifier = Modifier.weight(1f),
                 ) {
-                    Icon(Icons.Filled.Settings, null, Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
+                    Icon(Icons.Filled.Settings, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text("控制")
                 }
 
@@ -777,8 +838,8 @@ private fun KpmModuleItem(
                         containerColor = MaterialTheme.colorScheme.error,
                     ),
                 ) {
-                    Icon(Icons.Filled.Delete, null, Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
+                    Icon(Icons.Filled.Delete, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text("卸载")
                 }
             }
