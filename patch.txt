@@ -193,6 +193,7 @@ os.makedirs(kd,exist_ok=True)
 open(kd+'/KpmBridge.kt','w').write(r'''package org.bakasu.bakasu.ui.screen.kpm
 
 import android.content.Context
+import androidx.compose.runtime.mutableStateOf
 import com.topjohnwu.superuser.Shell
 import java.io.File
 
@@ -230,20 +231,23 @@ object KpmBridge {
     private var readyChecked = false
     private var readyCached = false
 
-    private fun probeOnce(): Boolean? = try {
-        run(listOf("hello")).trim().contains("hello2026")
-    } catch (t: Throwable) {
-        null
-    }
+    private val kpmReadyState = mutableStateOf(true)
+    private var checkStarted = false
 
-    /** 和 SukiSU 一样：确认有 KPM 才显示，判断不了也当没有 */
+    /** 打开应用时在后台查一次；判断不了当作没有。读取是 Compose 状态，查完自动刷新底栏 */
     fun isKpmReady(): Boolean {
-        if (readyChecked) return readyCached
-        var r = probeOnce()
-        if (r == null) r = probeOnce()
-        readyCached = r ?: false
-        readyChecked = true
-        return readyCached
+        if (!checkStarted) {
+            checkStarted = true
+            Thread {
+                val r = try {
+                    run(listOf("hello")).trim().contains("hello2026")
+                } catch (t: Throwable) {
+                    false
+                }
+                kpmReadyState.value = r
+            }.start()
+        }
+        return kpmReadyState.value
     }
 
 
