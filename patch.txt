@@ -359,6 +359,9 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -410,6 +413,8 @@ fun KpmPage(bottomPadding: Dp) {
     var showOutput by remember { mutableStateOf(false) }
     var refresh by remember { mutableStateOf(0) }
     var moreOpen by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    var embedUninstall by remember { mutableStateOf<String?>(null) }
 
     var pendingUri by remember { mutableStateOf<Uri?>(null) }
     var pendingPath by remember { mutableStateOf("") }
@@ -422,6 +427,21 @@ fun KpmPage(bottomPadding: Dp) {
 
     LaunchedEffect(refresh) {
         modules = withContext(Dispatchers.IO) { KpmBridge.installed(context) }
+    }
+
+    fun toast(msg: String) {
+        scope.launch { snackbarHostState.showSnackbar(msg, duration = SnackbarDuration.Short) }
+    }
+
+    fun report(text: String, okText: String) {
+        val t = text.trim()
+        val bad = t.contains("失败") || t.contains("Error", true) || t.contains("rror", true)
+        if (bad) {
+            output = t.ifBlank { "（无输出）" }
+            showOutput = true
+        } else {
+            toast(okText)
+        }
     }
 
     fun stage(uri: Uri) {
@@ -457,18 +477,18 @@ fun KpmPage(bottomPadding: Dp) {
         if (path.isEmpty()) return
         scope.launch {
             busy = true
-            output = withContext(Dispatchers.IO) {
+            val r = withContext(Dispatchers.IO) {
                 try {
-                    val r = KpmBridge.load(path)
+                    val out = KpmBridge.load(path)
                     File(path).delete()
-                    "load: " + r.ifBlank { "ok" }
+                    out
                 } catch (t: Throwable) {
                     "失败: ${t.message}"
                 }
             }
-            showOutput = true
             busy = false
             refresh++
+            report(r, "加载成功")
         }
     }
 
@@ -478,16 +498,16 @@ fun KpmPage(bottomPadding: Dp) {
         if (uri == null) return
         scope.launch {
             busy = true
-            output = withContext(Dispatchers.IO) {
+            val r = withContext(Dispatchers.IO) {
                 try {
                     KpmEmbed.embed(context, uri)
                 } catch (t: Throwable) {
                     "失败: ${t.message}"
                 }
             }
-            showOutput = true
             busy = false
             refresh++
+            report(r, "嵌入完成，重启后生效")
         }
     }
 
@@ -500,17 +520,23 @@ fun KpmPage(bottomPadding: Dp) {
     ) { uris ->
         scope.launch {
             busy = true
-            output = withContext(Dispatchers.IO) {
+            val r = withContext(Dispatchers.IO) {
                 if (uris.isNullOrEmpty()) "未选择任何模块，已取消重新修补" else repatch(context, uris)
             }
-            showOutput = true
             busy = false
             refresh++
+            if (uris.isNullOrEmpty()) {
+                output = r
+                showOutput = true
+            } else {
+                report(r, "重新修补完成，重启后生效")
+            }
         }
     }
 
     Scaffold(
         modifier = Modifier.fillMaxSize().padding(bottom = bottomPadding),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
             FloatingActionButton(onClick = { picker.launch(arrayOf("*/*")) }) {
                 Icon(Icons.Filled.Add, "添加")
@@ -544,10 +570,10 @@ fun KpmPage(bottomPadding: Dp) {
                                 moreOpen = false
                                 scope.launch {
                                     busy = true
-                                    output = withContext(Dispatchers.IO) { repatch(context, emptyList()) }
-                                    showOutput = true
+                                    val r = withContext(Dispatchers.IO) { repatch(context, emptyList()) }
                                     busy = false
                                     refresh++
+                                    report(r, "已清空嵌入，重启后生效")
                                 }
                             },
                         )
@@ -586,13 +612,16 @@ fun KpmPage(bottomPadding: Dp) {
                                 controlArgs = module.args
                             },
                             onUnload = {
-                                scope.launch {
-                                    busy = true
-                                    output = withContext(Dispatchers.IO) { KpmBridge.unload(module.name) }
-                                        .ifBlank { "已卸载 ${module.name}" }
-                                    showOutput = true
-                                    busy = false
-                                    refresh++
+                                if (module.embedded) {
+                                    embedUninstall = module.name
+                                } else {
+                                    scope.launch {
+                                        busy = true
+                                        val r = withContext(Dispatchers.IO) { KpmBridge.unload(module.name) }
+                                        busy = false
+                                        refresh++
+                                        report(r, "已卸载 ${module.name}")
+                                    }
                                 }
                             },
                         )
@@ -657,6 +686,43 @@ fun KpmPage(bottomPadding: Dp) {
                         clearPending(true)
                     }) { Text("取消") }
                 }
+            },
+            shape = MaterialTheme.shapes.extraLarge,
+        )
+    }
+
+    val removing = embedUninstall
+    if (removing != null) {
+        AlertDialog(
+            onDismissRequest = { embedUninstall = null },
+            title = {
+                Text("卸载 $removing", style = MaterialTheme.typography.headlineSmall)
+            },
+            text = {
+                Text(
+                    "会从 boot 镜像里移除这个嵌入模块，其他嵌入模块保留。写入完成后需要重启才彻底消失。",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    embedUninstall = null
+                    scope.launch {
+                        busy = true
+                        val r = withContext(Dispatchers.IO) {
+                            KpmBridge.unload(removing)
+                            KpmEmbed.removeEmbedded(context, removing)
+                        }
+                        busy = false
+                        refresh++
+                        report(r, "已移除 $removing，重启后生效")
+                    }
+                }) {
+                    Text("卸载", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { embedUninstall = null }) { Text("取消") }
             },
             shape = MaterialTheme.shapes.extraLarge,
         )
@@ -795,7 +861,6 @@ private fun KpmModuleItem(
 
                 Button(
                     onClick = onUnload,
-                    enabled = !module.embedded,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error,
@@ -975,6 +1040,88 @@ fun repatch(context: Context, moduleUris: List<Uri>, onStep: (String) -> Unit = 
     step("完成，重启后生效")
     return log.toString()
 }
+
+    /** 从 boot 里移除指定嵌入模块，其余保留（kptools -E 按名保留重建） */
+    fun removeEmbedded(context: Context, name: String, onStep: (String) -> Unit = {}): String {
+        val log = StringBuilder()
+        fun step(msg: String) {
+            log.append(msg).append('\n')
+            onStep(msg)
+        }
+
+        KpmBridge.ensureTools(context, listOf("kptools", "kpimg", "magiskboot"))
+            ?.let { return it }
+
+        val slot = sh("getprop ro.boot.slot_suffix").second.trim().ifBlank { "_a" }
+        val dev = "/dev/block/by-name/boot$slot"
+        step("目标分区：$dev")
+
+        sh("rm -rf $WORK && mkdir -p $WORK")
+        var code = sh("dd if=$dev of=$WORK/boot.img bs=4096 2>&1").first
+        step("读取 boot：code=$code")
+        if (code != 0 || !exists("$WORK/boot.img")) return log.toString() + "读取 boot 失败"
+
+        var r = sh("cd $WORK && $MAGISKBOOT unpack boot.img 2>&1")
+        step("解包：code=${r.first}")
+        if (r.first != 0 || !exists("$WORK/kernel")) {
+            return log.toString() + "解包失败：${r.second.take(400)}"
+        }
+
+        val extras = ArrayList<Pair<String, String>>()
+        var inExtras = false
+        var curType = "kpm"
+        for (raw in sh("cd $WORK && $KTOOLS -l -i kernel 2>&1").second.lines()) {
+            val line = raw.trim()
+            if (line.startsWith("[extras]")) {
+                inExtras = true
+                continue
+            }
+            if (line.startsWith("[")) {
+                if (!line.startsWith("[extra ")) inExtras = false
+                continue
+            }
+            if (!inExtras) continue
+            if (line.startsWith("type=")) curType = line.removePrefix("type=").trim()
+            if (line.startsWith("name=")) {
+                val n = line.removePrefix("name=").trim()
+                if (n.isNotEmpty()) extras.add(n to curType)
+            }
+        }
+
+        if (extras.isEmpty()) return log.toString() + "boot 里没有嵌入的模块"
+
+        val keep = extras.filter { it.first != name }
+        step("现有嵌入：" + extras.joinToString(", ") { it.first })
+        step("保留：" + (if (keep.isEmpty()) "(none)" else keep.joinToString(", ") { it.first }))
+
+        val keepArgs = keep.joinToString(" ") { "-E \"${it.first}\" -T ${it.second}" }
+        val cmd = if (keep.isEmpty()) {
+            "cd $WORK && $KTOOLS -p -i kernel -k $KPIMG -o kernel.new 2>&1"
+        } else {
+            "cd $WORK && $KTOOLS -p -i kernel -k $KPIMG $keepArgs -o kernel.new 2>&1"
+        }
+        r = sh(cmd)
+        step("重建嵌入：code=${r.first}")
+        if (r.first != 0 || !exists("$WORK/kernel.new")) {
+            return log.toString() + "移除失败：${r.second.takeLast(600)}"
+        }
+
+        sh("cd $WORK && mv -f kernel.new kernel && rm -f new-boot.img")
+        r = sh("cd $WORK && $MAGISKBOOT repack boot.img new-boot.img 2>&1")
+        step("重打包：code=${r.first}")
+        if (r.first != 0 || !exists("$WORK/new-boot.img")) {
+            return log.toString() + "重打包失败：${r.second.take(400)}"
+        }
+
+        code = sh("dd if=$WORK/new-boot.img of=$dev bs=4096 2>&1").first
+        step("写入分区：code=$code")
+        if (code != 0) return log.toString() + "写入失败"
+
+        sh("sync")
+        sh("rm -rf $WORK")
+        step("完成，重启后生效")
+        return log.toString()
+    }
 }
 ''')
 print('kpm sources ok')
