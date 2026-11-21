@@ -243,40 +243,27 @@ object KpmBridge {
     }
 
     private fun probe(): Boolean? = try {
-        val r = Shell.cmd("$KPATCH hello").exec()
-        val out = (r.out + r.err).joinToString("\n")
+        val p = ProcessBuilder("su", "-c", "$KPATCH hello")
+            .redirectErrorStream(true)
+            .start()
+        val out = p.inputStream.bufferedReader().readText()
+        p.waitFor()
         out.contains("hello2026")
     } catch (t: Throwable) {
         null
     }
 
-    private fun retryProbe(): Boolean? {
-        var result: Boolean? = null
-        var attempt = 0
-        while (attempt < 3) {
-            result = probe()
-            if (result != null) return result
-            attempt++
-            if (attempt < 3) {
-                try {
-                    Thread.sleep(800)
-                } catch (t: Throwable) {
-                }
-            }
-        }
-        return result
-    }
-
     /** 开机进程调用：探测一次，把结果按 boot_id 写进管理器配置 */
-    fun probeAndStore() {
-        val bootId = currentBootId() ?: return
-        val ctx = appContext ?: return
-        val ok = retryProbe() ?: return
+    fun probeAndStore(): Boolean? {
+        val bootId = currentBootId() ?: return null
+        val ctx = appContext ?: return null
+        val ok = probe() ?: return null
         ctx.getSharedPreferences("kpm_state", Context.MODE_PRIVATE)
             .edit()
             .putString("boot_id", bootId)
             .putBoolean("ready", ok)
             .commit()
+        return ok
     }
 
     /** 界面调用：只读上一次开机写好的结果，没有结果时不探测、不等待 */
