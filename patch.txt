@@ -234,7 +234,7 @@ object KpmBridge {
     private val kpmReadyState = mutableStateOf(true)
     private var checkStarted = false
 
-    /** 打开应用时在后台查一次；判断不了当作没有。读取是 Compose 状态，查完自动刷新底栏 */
+    /** 打开应用时在后台查一次；读取是 Compose 状态，查完 MainScreen 会重算底栏 */
     fun isKpmReady(): Boolean {
         if (!checkStarted) {
             checkStarted = true
@@ -1153,6 +1153,14 @@ fun repatch(context: Context, moduleUris: List<Uri>, onStep: (String) -> Unit = 
 }
 ''')
 print('kpm sources ok')
+pm2='app/src/main/java/org/bakasu/bakasu/ui/screen/main/MainScreen.kt'
+m=open(pm2).read()
+old_pages='    val pages = remember(homeState.systemStatus.isFullFeatured) {\n        BottomBarDestination.getPages(homeState.systemStatus.isFullFeatured)\n    }'
+new_pages='    val kpmReady = org.bakasu.bakasu.ui.screen.kpm.KpmBridge.isKpmReady()\n    val pages = remember(homeState.systemStatus.isFullFeatured, kpmReady) {\n        BottomBarDestination.getPages(homeState.systemStatus.isFullFeatured)\n    }'
+if 'KpmBridge.isKpmReady()' not in m and old_pages in m:
+    m=m.replace(old_pages,new_pages,1)
+    open(pm2,'w').write(m)
+print('kpm mainscreen ok')
 
 
 
