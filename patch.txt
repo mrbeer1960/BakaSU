@@ -330,19 +330,26 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Archive
-import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Inventory
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
@@ -352,7 +359,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -365,7 +371,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -384,6 +389,16 @@ private fun displayName(context: Context, uri: Uri): String = try {
     ""
 }
 
+private fun copyToCache(context: Context, uri: Uri): File? = try {
+    val tmp = File(context.cacheDir, "import-${System.currentTimeMillis()}.kpm")
+    context.contentResolver.openInputStream(uri)?.use { input ->
+        tmp.outputStream().use { out -> input.copyTo(out) }
+    }
+    if (tmp.length() > 0) tmp else null
+} catch (t: Throwable) {
+    null
+}
+
 @Composable
 fun KpmPage(bottomPadding: Dp) {
     val context = LocalContext.current
@@ -393,113 +408,112 @@ fun KpmPage(bottomPadding: Dp) {
     var busy by remember { mutableStateOf(false) }
     var output by remember { mutableStateOf("") }
     var showOutput by remember { mutableStateOf(false) }
-    var menuOpen by remember { mutableStateOf(false) }
-    var controlTarget by remember { mutableStateOf<String?>(null) }
-    var controlParam by remember { mutableStateOf("") }
     var refresh by remember { mutableStateOf(0) }
+    var moreOpen by remember { mutableStateOf(false) }
 
-    // 待嵌入的模块：选中后不立即修补，等点「开始修补」
-    var pendingEmbed by remember { mutableStateOf<Uri?>(null) }
-    var pendingName by remember { mutableStateOf("") }
+    var pendingUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingPath by remember { mutableStateOf("") }
+    var pendingFileName by remember { mutableStateOf("") }
+    var pendingModuleName by remember { mutableStateOf("") }
+    var showModeDialog by remember { mutableStateOf(false) }
+
+    var controlTarget by remember { mutableStateOf<String?>(null) }
+    var controlArgs by remember { mutableStateOf("") }
 
     LaunchedEffect(refresh) {
         modules = withContext(Dispatchers.IO) { KpmBridge.installed(context) }
     }
 
-    fun importFrom(uri: Uri) = scope.launch {
-        busy = true
-        output = withContext(Dispatchers.IO) {
-            try {
-                val tmp = File(context.cacheDir, "import-${System.currentTimeMillis()}.kpm")
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    tmp.outputStream().use { out -> input.copyTo(out) }
-                }
-                val r = KpmBridge.load(tmp.absolutePath)
-                tmp.delete()
-                "load: " + r.ifBlank { "ok" }
-            } catch (t: Throwable) {
-                "失败: ${t.message}"
+    fun stage(uri: Uri) {
+        scope.launch {
+            busy = true
+            val tmp = withContext(Dispatchers.IO) { copyToCache(context, uri) }
+            if (tmp == null) {
+                output = "读取文件失败"
+                showOutput = true
+                busy = false
+                return@launch
             }
+            pendingUri = uri
+            pendingPath = tmp.absolutePath
+            pendingFileName = displayName(context, uri).ifBlank { tmp.name }
+            pendingModuleName = withContext(Dispatchers.IO) { KpmBridge.moduleName(tmp.absolutePath) }.orEmpty()
+            busy = false
+            showModeDialog = true
         }
-        showOutput = true
-        busy = false
-        refresh++
+    }
+
+    fun clearPending(deleteFile: Boolean) {
+        if (deleteFile && pendingPath.isNotEmpty()) File(pendingPath).delete()
+        pendingUri = null
+        pendingPath = ""
+        pendingFileName = ""
+        pendingModuleName = ""
+    }
+
+    fun doLoad() {
+        val path = pendingPath
+        clearPending(false)
+        if (path.isEmpty()) return
+        scope.launch {
+            busy = true
+            output = withContext(Dispatchers.IO) {
+                try {
+                    val r = KpmBridge.load(path)
+                    File(path).delete()
+                    "load: " + r.ifBlank { "ok" }
+                } catch (t: Throwable) {
+                    "失败: ${t.message}"
+                }
+            }
+            showOutput = true
+            busy = false
+            refresh++
+        }
+    }
+
+    fun doEmbed() {
+        val uri = pendingUri
+        clearPending(true)
+        if (uri == null) return
+        scope.launch {
+            busy = true
+            output = withContext(Dispatchers.IO) {
+                try {
+                    KpmEmbed.embed(context, uri)
+                } catch (t: Throwable) {
+                    "失败: ${t.message}"
+                }
+            }
+            showOutput = true
+            busy = false
+            refresh++
+        }
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) importFrom(uri)
+        if (uri != null) stage(uri)
     }
 
     val repatchPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
-        if (uris.isNullOrEmpty()) {
-            output = "未选择任何模块，已取消重新修补"
-            showOutput = true
-        } else {
-            scope.launch {
-                busy = true
-                output = withContext(Dispatchers.IO) { KpmEmbed.repatch(context, uris) }
-                showOutput = true
-                busy = false
-                refresh++
+        scope.launch {
+            busy = true
+            output = withContext(Dispatchers.IO) {
+                if (uris.isNullOrEmpty()) "未选择任何模块，已取消重新修补" else repatch(context, uris)
             }
-        }
-    }
-
-    val embedPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            pendingEmbed = uri
-            pendingName = displayName(context, uri).ifBlank { "已选择文件" }
+            showOutput = true
+            busy = false
+            refresh++
         }
     }
 
     Scaffold(
         modifier = Modifier.fillMaxSize().padding(bottom = bottomPadding),
         floatingActionButton = {
-            Box {
-                FloatingActionButton(onClick = { menuOpen = true }) {
-                    Icon(Icons.Rounded.Add, "添加")
-                }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    DropdownMenuItem(
-                        modifier = Modifier.fillMaxWidth(),
-                        text = {
-                            Text("加载", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
-                        },
-                        onClick = { menuOpen = false; picker.launch(arrayOf("*/*")) },
-                    )
-                    DropdownMenuItem(
-                        modifier = Modifier.fillMaxWidth(),
-                        text = {
-                            Text("嵌入", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
-                        },
-                        onClick = { menuOpen = false; embedPicker.launch(arrayOf("*/*")) },
-                    )
-                    DropdownMenuItem(
-                        modifier = Modifier.fillMaxWidth(),
-                        text = {
-                            Text("重新修补", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
-                        },
-                        onClick = { menuOpen = false; repatchPicker.launch(arrayOf("*/*")) },
-                    )
-                    DropdownMenuItem(
-                        modifier = Modifier.fillMaxWidth(),
-                        text = {
-                            Text("清空嵌入", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
-                        },
-                        onClick = {
-                            menuOpen = false
-                            scope.launch {
-                                busy = true
-                                output = withContext(Dispatchers.IO) { KpmEmbed.repatch(context, emptyList()) }
-                                showOutput = true
-                                busy = false
-                                refresh++
-                            }
-                        },
-                    )
-                }
+            FloatingActionButton(onClick = { picker.launch(arrayOf("*/*")) }) {
+                Icon(Icons.Filled.Add, "添加")
             }
         },
     ) { inner ->
@@ -509,177 +523,159 @@ fun KpmPage(bottomPadding: Dp) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("内核模块", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                IconButton(onClick = { refresh++ }) { Icon(Icons.Rounded.Refresh, "刷新") }
+                IconButton(onClick = { refresh++ }) {
+                    Icon(Icons.Filled.Refresh, "刷新")
+                }
+                Box {
+                    IconButton(onClick = { moreOpen = true }) {
+                        Icon(Icons.Filled.MoreVert, "更多")
+                    }
+                    DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("重新修补") },
+                            onClick = {
+                                moreOpen = false
+                                repatchPicker.launch(arrayOf("*/*"))
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("清空嵌入") },
+                            onClick = {
+                                moreOpen = false
+                                scope.launch {
+                                    busy = true
+                                    output = withContext(Dispatchers.IO) { repatch(context, emptyList()) }
+                                    showOutput = true
+                                    busy = false
+                                    refresh++
+                                }
+                            },
+                        )
+                    }
+                }
             }
 
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
 
-            // 已选择待嵌入的文件：只有点这里才真正修补
-            pendingEmbed?.let { uri ->
-                Surface(
-                    modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    shape = RoundedCornerShape(16.dp),
-                ) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("待嵌入", style = MaterialTheme.typography.labelSmall)
-                        Text(
-                            pendingName,
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Spacer(Modifier.size(8.dp))
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            TextButton(onClick = { pendingEmbed = null; pendingName = "" }) {
-                                Text("取消")
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            Button(onClick = {
-                                pendingEmbed = null
-                                scope.launch {
-                                    busy = true
-                                    output = withContext(Dispatchers.IO) { KpmEmbed.embed(context, uri) }
-                                    showOutput = true
-                                    busy = false
-                                }
-                            }) { Text("开始修补") }
-                        }
-                    }
-                }
-            }
-
             if (modules.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        "暂无内核模块",
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            Icons.Filled.Code, null,
+                            Modifier.size(96.dp).padding(bottom = 16.dp),
+                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                        )
+                        Text(
+                            "暂无内核模块",
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    }
                 }
             } else {
                 LazyColumn(
                     Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     items(modules) { module ->
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            color = MaterialTheme.colorScheme.surface,
-                            tonalElevation = 1.dp,
-                            shape = RoundedCornerShape(20.dp),
-                        ) {
-                            Column(Modifier.padding(16.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        Icons.Rounded.Archive, null,
-                                        Modifier.size(24.dp),
-                                        tint = MaterialTheme.colorScheme.primary,
-                                    )
-                                    Spacer(Modifier.width(12.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            module.name,
-                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        Text(
-                                            when {
-                                                module.embedded -> "已嵌入"
-                                                module.loaded -> "已加载"
-                                                else -> "未加载"
-                                            },
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = if (module.embedded || module.loaded)
-                                                MaterialTheme.colorScheme.primary
-                                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                        run {
-                                            val meta = buildString {
-                                                if (module.version.isNotEmpty()) append(module.version)
-                                                if (module.author.isNotEmpty()) {
-                                                    if (isNotEmpty()) append(", ")
-                                                    append("作者 ").append(module.author)
-                                                }
-                                            }
-                                            if (meta.isNotEmpty()) {
-                                                Text(
-                                                    meta,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                )
-                                            }
-                                        }
-                                        Text(
-                                            "参数: " + module.args.ifBlank { "(null)" },
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
+                        KpmModuleItem(
+                            module = module,
+                            onControl = {
+                                controlTarget = module.name
+                                controlArgs = module.args
+                            },
+                            onUnload = {
+                                scope.launch {
+                                    busy = true
+                                    output = withContext(Dispatchers.IO) { KpmBridge.unload(module.name) }
+                                        .ifBlank { "已卸载 ${module.name}" }
+                                    showOutput = true
+                                    busy = false
+                                    refresh++
                                 }
-                                if (module.description.isNotEmpty()) {
-                                    Spacer(Modifier.size(8.dp))
-                                    Text(
-                                        module.description,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                Row(
-                                    Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.End,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    if (module.loaded) {
-                                        TextButton(onClick = {
-                                            controlTarget = module.name
-                                            controlParam = ""
-                                        }) {
-                                            Icon(Icons.Rounded.Terminal, null, Modifier.size(18.dp))
-                                            Spacer(Modifier.width(6.dp))
-                                            Text("控制")
-                                        }
-                                    }
-                                    if (!module.embedded) {
-                                        TextButton(onClick = {
-                                            scope.launch {
-                                                busy = true
-                                                output = withContext(Dispatchers.IO) { KpmBridge.unload(module.name) }
-                                                    .ifBlank { "已卸载 ${module.name}" }
-                                                showOutput = true
-                                                busy = false
-                                                refresh++
-                                            }
-                                        }) { Text("卸载") }
-
-                                    }
-                                }
-                            }
-                        }
+                            },
+                        )
                     }
+                    item { Spacer(Modifier.height(72.dp)) }
                 }
             }
         }
+    }
+
+    if (showModeDialog) {
+        val desc = if (pendingModuleName.isNotEmpty()) {
+            "模块 $pendingModuleName，请选择安装方式"
+        } else {
+            "已选择 $pendingFileName，请选择安装方式"
+        }
+        AlertDialog(
+            onDismissRequest = {
+                showModeDialog = false
+                clearPending(true)
+            },
+            title = {
+                Text("安装模式", style = MaterialTheme.typography.headlineSmall)
+            },
+            text = {
+                Column {
+                    Text(desc, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(16.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { showModeDialog = false; doEmbed() },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(
+                                Icons.Filled.Inventory, null,
+                                Modifier.size(18.dp).padding(end = 4.dp),
+                            )
+                            Text("嵌入")
+                        }
+                        Button(
+                            onClick = { showModeDialog = false; doLoad() },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(
+                                Icons.Filled.Download, null,
+                                Modifier.size(18.dp).padding(end = 4.dp),
+                            )
+                            Text("加载")
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                Column(
+                    Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Spacer(Modifier.height(16.dp))
+                    TextButton(onClick = {
+                        showModeDialog = false
+                        clearPending(true)
+                    }) { Text("取消") }
+                }
+            },
+            shape = MaterialTheme.shapes.extraLarge,
+        )
     }
 
     val target = controlTarget
     if (target != null) {
         AlertDialog(
             onDismissRequest = { controlTarget = null },
-            title = { Text("控制 $target") },
+            title = {
+                Text("控制", style = MaterialTheme.typography.headlineSmall)
+            },
             text = {
                 OutlinedTextField(
-                    value = controlParam,
-                    onValueChange = { controlParam = it },
+                    value = controlArgs,
+                    onValueChange = { controlArgs = it },
                     label = { Text("参数") },
-                    singleLine = true,
+                    placeholder = { Text("(null)") },
+                    modifier = Modifier.fillMaxWidth(),
                 )
             },
             confirmButton = {
@@ -687,13 +683,16 @@ fun KpmPage(bottomPadding: Dp) {
                     controlTarget = null
                     scope.launch {
                         busy = true
-                        output = withContext(Dispatchers.IO) { KpmBridge.control(target, controlParam) }
+                        output = withContext(Dispatchers.IO) { KpmBridge.control(target, controlArgs) }
                         showOutput = true
                         busy = false
                     }
                 }) { Text("确定") }
             },
-            dismissButton = { TextButton(onClick = { controlTarget = null }) { Text("取消") } },
+            dismissButton = {
+                TextButton(onClick = { controlTarget = null }) { Text("取消") }
+            },
+            shape = MaterialTheme.shapes.extraLarge,
         )
     }
 
@@ -701,9 +700,113 @@ fun KpmPage(bottomPadding: Dp) {
         AlertDialog(
             onDismissRequest = { showOutput = false },
             title = { Text("输出") },
-            text = { Text(output.ifBlank { "（无输出）" }, style = MaterialTheme.typography.bodySmall) },
-            confirmButton = { TextButton(onClick = { showOutput = false }) { Text("关闭") } },
+            text = {
+                Text(
+                    output.ifBlank { "（无输出）" },
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 18,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showOutput = false }) { Text("关闭") }
+            },
+            shape = MaterialTheme.shapes.extraLarge,
         )
+    }
+}
+
+@Composable
+private fun KpmModuleItem(
+    module: KpmModule,
+    onControl: () -> Unit,
+    onUnload: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+    ) {
+        Column(Modifier.padding(20.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = module.name,
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+
+                    Spacer(Modifier.height(4.dp))
+
+                    Text(
+                        text = "版本: " + module.version.ifBlank { "-" },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+
+                    Text(
+                        text = "作者: " + module.author.ifBlank { "-" },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+
+                    Text(
+                        text = "参数: " + module.args.ifBlank { "(null)" },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+
+                    if (module.embedded || module.loaded) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = if (module.embedded) "已嵌入" else "已加载",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
+
+            if (module.description.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+
+                Text(
+                    text = module.description,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    onClick = onControl,
+                    enabled = module.loaded,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.Filled.Settings, null, Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("控制")
+                }
+
+                Button(
+                    onClick = onUnload,
+                    enabled = !module.embedded,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) {
+                    Icon(Icons.Filled.Delete, null, Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("卸载")
+                }
+            }
+        }
     }
 }
 ''')
