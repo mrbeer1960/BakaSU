@@ -641,7 +641,10 @@ fun KpmPage(bottomPadding: Dp) {
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
 
             if (shown.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier.fillMaxSize().padding(bottom = bottomPadding),
+                    contentAlignment = Alignment.Center,
+                ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(
                             Icons.Filled.Code, null,
