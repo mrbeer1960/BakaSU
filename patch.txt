@@ -229,66 +229,21 @@ object KpmBridge {
 
     private var readyChecked = false
     private var readyCached = false
-    private var readyBootId: String? = null
-    private var appContext: Context? = null
 
-    fun init(context: Context) {
-        appContext = context.applicationContext
-    }
-
-    private fun currentBootId(): String? = try {
-        File("/proc/sys/kernel/random/boot_id").readText().trim()
+    private fun probeOnce(): Boolean? = try {
+        run(listOf("hello")).trim().contains("hello2026")
     } catch (t: Throwable) {
         null
     }
 
-    private var lastProbeError: String? = null
-
-    private fun probe(): Boolean? = try {
-        lastProbeError = null
-        val p = ProcessBuilder("/system/bin/su", "-c", "$KPATCH hello")
-            .redirectErrorStream(true)
-            .start()
-        val out = p.inputStream.bufferedReader().readText()
-        val code = p.waitFor()
-        if (code != 0) lastProbeError = "code=" + code + " out=" + out.take(120)
-        out.contains("hello2026")
-    } catch (t: Throwable) {
-        lastProbeError = t.toString()
-        null
-    }
-
-    /** 开机进程调用：探测一次，把结果按 boot_id 写进管理器配置 */
-    fun probeAndStore(): Boolean? {
-        val ctx = appContext ?: return null
-        val bootId = currentBootId() ?: return null
-        val sp = ctx.getSharedPreferences("kpm_state", Context.MODE_PRIVATE)
-        val r = probe()
-        if (r == null) {
-            sp.edit()
-                .putString("boot_id", bootId)
-                .putString("diag", lastProbeError ?: "unknown")
-                .commit()
-            return null
-        }
-        sp.edit()
-            .putString("boot_id", bootId)
-            .putBoolean("ready", r)
-            .remove("diag")
-            .commit()
-        return r
-    }
-
-    /** 界面调用：只读上一次开机写好的结果，没有结果时不探测、不等待 */
+    /** 和 SukiSU 一样：确认有 KPM 才显示，判断不了也当没有 */
     fun isKpmReady(): Boolean {
-        val bootId = currentBootId() ?: return true
-        val ctx = appContext ?: return true
-        val sp = ctx.getSharedPreferences("kpm_state", Context.MODE_PRIVATE)
-        val saved = sp.getString("boot_id", null)
-        if (saved != null && saved == bootId) {
-            return sp.getBoolean("ready", true)
-        }
-        return true
+        if (readyChecked) return readyCached
+        var r = probeOnce()
+        if (r == null) r = probeOnce()
+        readyCached = r ?: false
+        readyChecked = true
+        return readyCached
     }
 
 
@@ -1195,24 +1150,6 @@ fun repatch(context: Context, moduleUris: List<Uri>, onStep: (String) -> Unit = 
 ''')
 print('kpm sources ok')
 
-pa='app/src/main/java/org/bakasu/bakasu/KernelSUApplication.kt'
-a=open(pa).read()
-if 'KpmBridge.init' not in a:
-    a=a.replace('import org.bakasu.bakasu.di.appModules','import org.bakasu.bakasu.di.appModules\nimport org.bakasu.bakasu.ui.screen.kpm.KpmBridge',1)
-    a=a.replace('        super.onCreate()','        super.onCreate()\n        KpmBridge.init(this)',1)
-    marker='            if (processName.endsWith("MagicaService")) {\n                // avoid loading unnecessary thing when starting MagicaService\n                return\n            }'
-    if marker in a:
-        a=a.replace(marker, marker+'\n            if (processName.endsWith(":kpmprobe")) {\n                return\n            }',1)
-    open(pa,'w').write(a)
-print('kpm init ok')
-open(kd+'/KpmBootReceiver.kt','w').write('package org.bakasu.bakasu.ui.screen.kpm\n\nimport android.content.BroadcastReceiver\nimport android.content.Context\nimport android.content.Intent\n\n/** 开机时在独立进程里立刻查一次 kpatch 是否可用，查完把自己杀掉，不影响主进程 */\nclass KpmBootReceiver : BroadcastReceiver() {\n    override fun onReceive(context: Context, intent: Intent?) {\n        if (intent == null || intent.action != Intent.ACTION_BOOT_COMPLETED) return\n        val app = context.applicationContext\n        val pending = goAsync()\n        Thread {\n            try {\n                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)\n            } catch (t: Throwable) {\n            }\n            try {\n                KpmBridge.init(app)\n                KpmBridge.probeAndStore()\n            } catch (t: Throwable) {\n            } finally {\n                pending.finish()\n            }\n            try {\n                android.os.Process.killProcess(android.os.Process.myPid())\n            } catch (t: Throwable) {\n            }\n        }.start()\n    }\n}\n')
-print('kpm receiver src ok')
-pm='app/src/main/AndroidManifest.xml'
-m=open(pm).read()
-if 'KpmBootReceiver' not in m:
-    m=m.replace('    </application>', '        <receiver\n            android:name=".ui.screen.kpm.KpmBootReceiver"\n            android:directBootAware="true"\n            android:exported="false"\n            android:process=":kpmprobe">\n            <intent-filter>\n                <action android:name="android.intent.action.BOOT_COMPLETED" />\n            </intent-filter>\n        </receiver>\n    </application>',1)
-    open(pm,'w').write(m)
-print('kpm receiver manifest ok')
 
 
 
