@@ -116,7 +116,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import org.bakasu.bakasu.R
-import org.bakasu.bakasu.ui.screen.kpm.KpmBridge
 import org.bakasu.bakasu.ui.screen.kpm.KpmPage
 import org.bakasu.bakasu.ui.screen.main.HomePage
 import org.bakasu.bakasu.ui.screen.main.ModulePage
@@ -169,7 +168,7 @@ enum class BottomBarDestination(
 
     companion object {
         fun getPages(isKsuValid: Boolean): List<BottomBarDestination> = if (isKsuValid) {
-            BottomBarDestination.entries.filter { it != KernelModule || KpmBridge.isKpmReady() }
+            BottomBarDestination.entries.toList()
         } else {
             BottomBarDestination.entries.filter {
                 !it.rootRequired
@@ -193,7 +192,6 @@ os.makedirs(kd,exist_ok=True)
 open(kd+'/KpmBridge.kt','w').write(r'''package org.bakasu.bakasu.ui.screen.kpm
 
 import android.content.Context
-import androidx.compose.runtime.mutableStateOf
 import com.topjohnwu.superuser.Shell
 import java.io.File
 
@@ -228,27 +226,6 @@ object KpmBridge {
 
     fun available(): Boolean = run(listOf("hello")) == "hello2026"
 
-    private var readyChecked = false
-    private var readyCached = false
-
-    private val kpmReadyState = mutableStateOf(true)
-    private var checkStarted = false
-
-    /** 打开应用时在后台查一次；读取是 Compose 状态，查完 MainScreen 会重算底栏 */
-    fun isKpmReady(): Boolean {
-        if (!checkStarted) {
-            checkStarted = true
-            Thread {
-                val r = try {
-                    run(listOf("hello")).trim().contains("hello2026")
-                } catch (t: Throwable) {
-                    false
-                }
-                kpmReadyState.value = r
-            }.start()
-        }
-        return kpmReadyState.value
-    }
 
 
     fun nums(): Int = run(listOf("kpm", "num")).trim().toIntOrNull() ?: 0
@@ -1153,14 +1130,6 @@ fun repatch(context: Context, moduleUris: List<Uri>, onStep: (String) -> Unit = 
 }
 ''')
 print('kpm sources ok')
-pm2='app/src/main/java/org/bakasu/bakasu/ui/screen/main/MainScreen.kt'
-m=open(pm2).read()
-old_pages='    val pages = remember(homeState.systemStatus.isFullFeatured) {\n        BottomBarDestination.getPages(homeState.systemStatus.isFullFeatured)\n    }'
-new_pages='    val kpmReady = org.bakasu.bakasu.ui.screen.kpm.KpmBridge.isKpmReady()\n    val pages = remember(homeState.systemStatus.isFullFeatured, kpmReady) {\n        BottomBarDestination.getPages(homeState.systemStatus.isFullFeatured)\n    }'
-if 'KpmBridge.isKpmReady()' not in m and old_pages in m:
-    m=m.replace(old_pages,new_pages,1)
-    open(pm2,'w').write(m)
-print('kpm mainscreen ok')
 
 
 
