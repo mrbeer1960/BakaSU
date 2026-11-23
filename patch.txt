@@ -211,7 +211,7 @@ data class KpmModule(
  * 注意：/data/adb 下的读写全部通过 root shell 完成，App 自身没有权限。
  */
 object KpmBridge {
-    private const val KPATCH = "/data/adb/ksu/bin/kpatch"
+    private const val KSUD = "/data/adb/ksud"
     const val MODULE_DIR = "/data/adb/kpm"
     private const val EMBED_WORK = "/data/local/tmp/kpm-chk"
 
@@ -222,9 +222,7 @@ object KpmBridge {
         Pair(-1, t.message ?: "error")
     }
 
-    private fun run(args: List<String>): String = sh((listOf(KPATCH) + args).joinToString(" ")).second
-
-    fun available(): Boolean = run(listOf("hello")) == "hello2026"
+    private fun run(args: List<String>): String = sh((listOf(KSUD, "kpm") + args).joinToString(" ")).second
 
 
 
@@ -439,8 +437,8 @@ fun KpmPage(bottomPadding: Dp) {
     var embedUninstall by remember { mutableStateOf<String?>(null) }
 
     // 先选文件，选完再问：嵌入 / 加载
-    var pendingUri by remember { mutableStateOf<Uri?>(null) }
-    var pendingPath by remember { mutableStateOf("") }
+    var pendingUris by remember { mutableStateOf(emptyList<Uri>()) }
+    var pendingPaths by remember { mutableStateOf(emptyList<String>()) }
     var pendingFileName by remember { mutableStateOf("") }
     var pendingModuleName by remember { mutableStateOf("") }
     var showModeDialog by remember { mutableStateOf(false) }
@@ -467,41 +465,57 @@ fun KpmPage(bottomPadding: Dp) {
         }
     }
 
-    fun stage(uri: Uri) {
+    fun stageMany(uris: List<Uri>) {
         scope.launch {
             busy = true
-            val tmp = withContext(Dispatchers.IO) { copyToCache(context, uri) }
-            if (tmp == null) {
-                output = "读取文件失败"
-                showOutput = true
-                busy = false
-                return@launch
+            val paths = mutableListOf<String>()
+            var firstModule = ""
+            for ((i, uri) in uris.withIndex()) {
+                val tmp = withContext(Dispatchers.IO) { copyToCache(context, uri) }
+                if (tmp == null) {
+                    paths.forEach { File(it).delete() }
+                    output = "读取第 ${i + 1} 个文件失败"
+                    showOutput = true
+                    busy = false
+                    return@launch
+                }
+                paths.add(tmp.absolutePath)
+                if (i == 0) {
+                    firstModule =
+                        withContext(Dispatchers.IO) { KpmBridge.moduleName(tmp.absolutePath) }.orEmpty()
+                }
             }
-            pendingUri = uri
-            pendingPath = tmp.absolutePath
-            pendingFileName = displayName(context, uri).ifBlank { tmp.name }
-            pendingModuleName = withContext(Dispatchers.IO) { KpmBridge.moduleName(tmp.absolutePath) }.orEmpty()
+            pendingUris = uris
+            pendingPaths = paths
+            pendingFileName = if (uris.size == 1) {
+                displayName(context, uris[0]).ifBlank { File(paths[0]).name }
+            } else {
+                "${uris.size} 个模块"
+            }
+            pendingModuleName = if (uris.size == 1) firstModule else ""
             busy = false
             showModeDialog = true
         }
     }
 
-    fun clearPending(deleteFile: Boolean) {
-        if (deleteFile && pendingPath.isNotEmpty()) File(pendingPath).delete()
-        pendingUri = null
-        pendingPath = ""
+    fun clearPending(deleteFiles: Boolean) {
+        if (deleteFiles) pendingPaths.forEach { File(it).delete() }
+        pendingUris = emptyList()
+        pendingPaths = emptyList()
         pendingFileName = ""
         pendingModuleName = ""
     }
 
-    fun doEmbed(uri: Uri) {
+    fun doEmbed(uris: List<Uri>, cachePaths: List<String>) {
         scope.launch {
             busy = true
             val r = withContext(Dispatchers.IO) {
                 try {
-                    KpmEmbed.embed(context, uri)
+                    KpmEmbed.embedMultiple(context, uris)
                 } catch (t: Throwable) {
                     "失败: ${t.message}"
+                } finally {
+                    cachePaths.forEach { File(it).delete() }
                 }
             }
             busy = false
@@ -528,8 +542,10 @@ fun KpmPage(bottomPadding: Dp) {
         }
     }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) stage(uri)
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (!uris.isNullOrEmpty()) stageMany(uris)
     }
 
     val shown = modules.filter { m ->
@@ -644,16 +660,25 @@ fun KpmPage(bottomPadding: Dp) {
                         if (pendingModuleName.isNotEmpty()) "模块 $pendingModuleName" else "已选择 $pendingFileName",
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "嵌入：写入 boot 分区，完成后需要重启才生效；可一次选多个模块。" +
+                            "\n加载：只对单个模块有效，重启后失效，不改动任何分区。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     Spacer(Modifier.height(16.dp))
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = {
                                 showModeDialog = false
-                                val u = pendingUri
-                                val p = pendingPath
-                                clearPending(false)
-                                if (p.isNotEmpty()) File(p).delete()
-                                if (u != null) doEmbed(u)
+                                val us = pendingUris
+                                val ps = pendingPaths
+                                pendingUris = emptyList()
+                                pendingPaths = emptyList()
+                                pendingFileName = ""
+                                pendingModuleName = ""
+                                if (us.isNotEmpty()) doEmbed(us, ps)
                             },
                             modifier = Modifier.fillMaxWidth(),
                         ) {
@@ -666,10 +691,14 @@ fun KpmPage(bottomPadding: Dp) {
                         Button(
                             onClick = {
                                 showModeDialog = false
-                                val p = pendingPath
-                                clearPending(false)
+                                val p = pendingPaths.firstOrNull().orEmpty()
+                                pendingUris = emptyList()
+                                pendingPaths = emptyList()
+                                pendingFileName = ""
+                                pendingModuleName = ""
                                 if (p.isNotEmpty()) doLoad(p)
                             },
+                            enabled = pendingUris.size == 1,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Icon(
@@ -1112,6 +1141,80 @@ fun repatch(context: Context, moduleUris: List<Uri>, onStep: (String) -> Unit = 
         }
 
         sh("cd $WORK && mv -f kernel.new kernel && rm -f new-boot.img")
+        r = sh("cd $WORK && $MAGISKBOOT repack boot.img new-boot.img 2>&1")
+        step("重打包：code=${r.first}")
+        if (r.first != 0 || !exists("$WORK/new-boot.img")) {
+            return log.toString() + "重打包失败：${r.second.take(400)}"
+        }
+
+        code = sh("dd if=$WORK/new-boot.img of=$dev bs=4096 2>&1").first
+        step("写入分区：code=$code")
+        if (code != 0) return log.toString() + "写入失败"
+
+        sh("sync")
+        sh("rm -rf $WORK")
+        step("完成，重启后生效")
+        return log.toString()
+    }
+
+    /** 一次嵌入多个模块：只解包/打补丁/重打包/写回一次 */
+    fun embedMultiple(context: Context, moduleUris: List<Uri>, onStep: (String) -> Unit = {}): String {
+        val log = StringBuilder()
+        fun step(msg: String) {
+            log.append(msg).append('\n')
+            onStep(msg)
+        }
+
+        KpmBridge.ensureTools(context, listOf("kptools", "kpimg", "magiskboot"))
+            ?.let { return it }
+
+        if (moduleUris.isEmpty()) return "没有选择模块"
+
+        val slot = sh("getprop ro.boot.slot_suffix").second.trim().ifBlank { "_a" }
+        val dev = "/dev/block/by-name/boot$slot"
+        step("目标分区：$dev")
+
+        sh("rm -rf $WORK && mkdir -p $WORK")
+
+        val extraArgs = StringBuilder()
+        var index = 0
+        for (uri in moduleUris) {
+            val cache = File(context.cacheDir, "embed-$index-${System.currentTimeMillis()}.kpm")
+            try {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    cache.outputStream().use { out -> input.copyTo(out) }
+                } ?: return "读取第 ${index + 1} 个文件失败"
+            } catch (t: Throwable) {
+                return "读取第 ${index + 1} 个文件失败：${t.message}"
+            }
+            val dst = "$WORK/m$index.kpm"
+            if (sh("cp -f '${cache.absolutePath}' '$dst' && chmod 644 '$dst'").first != 0) {
+                return "复制第 ${index + 1} 个模块失败"
+            }
+            cache.delete()
+            extraArgs.append("-M $dst -T kpm ")
+            index++
+        }
+        step("准备 $index 个模块")
+
+        var code = sh("dd if=$dev of=$WORK/boot.img bs=4096 2>&1").first
+        step("读取 boot：code=$code")
+        if (code != 0 || !exists("$WORK/boot.img")) return log.toString() + "读取 boot 失败"
+
+        var r = sh("cd $WORK && $MAGISKBOOT unpack boot.img 2>&1")
+        step("解包：code=${r.first}")
+        if (r.first != 0 || !exists("$WORK/kernel")) {
+            return log.toString() + "解包失败：${r.second.take(400)}"
+        }
+
+        r = sh("cd $WORK && $KTOOLS -p -i kernel -k $KPIMG $extraArgs -o kernel.new 2>&1")
+        step("打补丁 + 嵌入：code=${r.first}")
+        if (r.first != 0 || !exists("$WORK/kernel.new")) {
+            return log.toString() + "打补丁失败：${r.second.takeLast(600)}"
+        }
+
+        sh("cd $WORK && mv -f kernel.new kernel && rm -f new-boot.img")
+
         r = sh("cd $WORK && $MAGISKBOOT repack boot.img new-boot.img 2>&1")
         step("重打包：code=${r.first}")
         if (r.first != 0 || !exists("$WORK/new-boot.img")) {
