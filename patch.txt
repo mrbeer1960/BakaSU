@@ -216,7 +216,7 @@ data class KpmModule(
 object KpmBridge {
     const val MODULE_DIR = "/data/adb/kpm"
     private const val KSUD = "/data/adb/ksud"
-    private const val EMBED_WORK = "/data/local/tmp/kpm-chk"
+    private const val EMBED_WORK = "/tmp/kpm-chk"
 
     private fun sh(cmd: String): Pair<Int, String> = try {
         val r = Shell.cmd(cmd).exec()
