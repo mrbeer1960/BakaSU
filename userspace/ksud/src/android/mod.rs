@@ -3,6 +3,7 @@ mod debug;
 mod dynamic_manager;
 mod feature;
 mod hot_install;
+mod kpm;
 mod init_event;
 mod ksucalls;
 mod late_load;
