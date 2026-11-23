@@ -21,33 +21,6 @@ on:
         required: false
         type: boolean
         default: true
-  workflow_dispatch:
-    inputs:
-      target:
-        description: 'Rust target'
-        required: true
-        default: 'aarch64-linux-android'
-        type: string
-      os:
-        description: 'Runner OS'
-        required: false
-        default: 'ubuntu-latest'
-        type: string
-      pack_lkm:
-        description: 'Pack LKM'
-        required: false
-        default: false
-        type: boolean
-      pack_ksuinit:
-        description: 'Pack ksuinit'
-        required: false
-        default: false
-        type: boolean
-      use_cache:
-        description: 'Use cache'
-        required: false
-        default: true
-        type: boolean
 env:
   CARGO_TERM_COLOR: always
 jobs:
@@ -58,12 +31,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          
-      - name: Apply patch.txt
-        run: cd manager && python3 ../patch.txt
 
       - name: Download artifacts
-        if: ${{ inputs.pack_lkm || inputs.pack_ksuinit }}
         uses: actions/download-artifact@v8
 
       - name: Prepare LKM fies
