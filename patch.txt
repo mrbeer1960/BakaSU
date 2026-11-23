@@ -603,7 +603,7 @@ fun KpmPage(bottomPadding: Dp) {
         floatingActionButton = {
             AnimatedFab(
                 visible = fabVisible,
-                modifier = Modifier.padding(bottom = bottomPadding),
+                modifier = Modifier.padding(bottom = bottomPadding + 5.dp),
             ) {
                 FloatingActionButton(
                     onClick = { picker.launch(arrayOf("*/*")) },
