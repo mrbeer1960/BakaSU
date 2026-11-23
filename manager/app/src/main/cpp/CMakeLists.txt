@@ -11,9 +11,11 @@ add_library(kernelsu
         jni.c
         ksu.c
         legacy.c
+        kpm/kpm.c
+        kpm/kpm_jni.c
 )
 
-target_include_directories(kernelsu PRIVATE .)
+target_include_directories(kernelsu PRIVATE . kpm kpm/uapi)
 
 find_library(log-lib log)
 
