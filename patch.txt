@@ -207,11 +207,12 @@ data class KpmModule(
 )
 
 /**
- * KPM 前端桥接：直接调 kpatch（和 APatch 走 JNI 直连内核是同一个思路）。
- * 注意：/data/adb 下的读写全部通过 root shell 完成，App 自身没有权限。
+ * KPM 前端桥接。
+ *
+ * 加载 / 卸载 / 列表 / 信息 / 控制：走 KpmNatives（JNI 直接 supercall，不 fork 任何进程）。
+ * 只读内核分区、释放工具：仍通过 root shell（App 自身没有 /data/adb 权限）。
  */
 object KpmBridge {
-    private const val KSUD = "/data/adb/ksud"
     const val MODULE_DIR = "/data/adb/kpm"
     private const val EMBED_WORK = "/data/local/tmp/kpm-chk"
 
@@ -222,21 +223,43 @@ object KpmBridge {
         Pair(-1, t.message ?: "error")
     }
 
-    private fun run(args: List<String>): String = sh((listOf(KSUD, "kpm") + args).joinToString(" ")).second
+    /** JNI 的 list/info 会打印到 stdout，这里重定向到临时文件再读回 */
+    private fun capture(context: Context, block: (String) -> Int): Pair<Int, String> {
+        val f = File(context.cacheDir, "kpm-out-${System.nanoTime()}.txt")
+        val rc = try {
+            block(f.absolutePath)
+        } catch (t: Throwable) {
+            -1
+        }
+        val text = try {
+            f.readText()
+        } catch (t: Throwable) {
+            ""
+        }
+        f.delete()
+        return rc to text
+    }
 
+    fun nums(): Int = try {
+        KpmNatives.nums()
+    } catch (t: Throwable) {
+        0
+    }
 
+    private fun loadedNames(context: Context): Set<String> {
+        val (rc, text) = capture(context) { KpmNatives.list(it) }
+        if (rc != 0) return emptySet()
+        return text.lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+    }
 
-    fun nums(): Int = run(listOf("kpm", "num")).trim().toIntOrNull() ?: 0
-
-    private fun loadedNames(): Set<String> = run(listOf("kpm", "list"))
-        .lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
-
-
-    private fun parseInfo(name: String, loaded: Set<String>): KpmModule {
+    private fun parseInfo(context: Context, name: String, loaded: Set<String>): KpmModule {
         val fields = HashMap<String, String>()
-        run(listOf("kpm", "info", name)).lines().forEach { line ->
+        val (_, text) = capture(context) { KpmNatives.info(name, it) }
+        text.lines().forEach { line ->
             val idx = line.indexOf('=')
-            if (idx > 0) fields[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
+            if (idx > 0) {
+                fields[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
+            }
         }
         return KpmModule(
             name = name,
@@ -249,18 +272,31 @@ object KpmBridge {
     }
 
     fun installed(context: Context): List<KpmModule> {
-        val loaded = loadedNames()
+        val loaded = loadedNames(context)
         val embedded = embeddedNames(context)
         val names = (loaded + embedded).distinct().sorted()
-        return names.map { n -> parseInfo(n, loaded).copy(embedded = embedded.contains(n)) }
+        return names.map { n -> parseInfo(context, n, loaded).copy(embedded = embedded.contains(n)) }
     }
 
     /** 从任意路径加载（不落地，重启即失效） */
-    fun load(path: String): String = run(listOf("kpm", "load", path))
+    fun load(path: String): String = try {
+        val rc = KpmNatives.load(path, "")
+        if (rc == 0) "" else "error: $rc"
+    } catch (t: Throwable) {
+        "失败: ${t.message}"
+    }
 
-    fun unload(name: String): String = run(listOf("kpm", "unload", name))
+    fun unload(name: String): String = try {
+        val rc = KpmNatives.unload(name)
+        if (rc == 0) "" else "error: $rc"
+    } catch (t: Throwable) {
+        "失败: ${t.message}"
+    }
 
-    fun info(name: String): String = run(listOf("kpm", "info", name))
+    fun info(context: Context, name: String): String {
+        val (rc, text) = capture(context) { KpmNatives.info(name, it) }
+        return if (rc == 0) text else ""
+    }
 
     /** 用 kptools 读 .kpm 内部的模块名 */
     fun moduleName(path: String): String? =
@@ -268,11 +304,14 @@ object KpmBridge {
             .lines().firstOrNull { it.startsWith("name=") }
             ?.substringAfter("name=")?.trim()?.takeIf { it.isNotEmpty() }
 
-    fun control(name: String, args: String): String =
-        run(listOf("kpm", "ctl0", name, args)).ifBlank { "ok" }
+    fun control(name: String, args: String): String = try {
+        val rc = KpmNatives.control(name, args)
+        if (rc == 0) "ok" else "error: $rc"
+    } catch (t: Throwable) {
+        "失败: ${t.message}"
+    }
 
-
-    /** 直接读 boot 镜像，取里面真正嵌入的模块名（不再依赖本地清单） */
+    /** 直接读 boot 镜像，取里面真正嵌入的模块名（不依赖本地清单） */
     fun embeddedNames(context: Context): Set<String> {
         ensureTools(context, listOf("kptools", "magiskboot"))
         val slot = sh("getprop ro.boot.slot_suffix").second.trim().ifBlank { "_a" }
@@ -282,15 +321,13 @@ object KpmBridge {
                 "cd \$W && /data/adb/ksu/bin/magiskboot unpack boot.img >/dev/null 2>&1 && " +
                 "/data/adb/ksu/bin/kptools -l -i kernel 2>/dev/null; cd /; rm -rf \$W"
         ).second
-        val names = out.lines()
+        return out.lines()
             .map { it.trim() }
             .filter { it.startsWith("name=") }
             .map { it.removePrefix("name=").trim() }
             .filter { it.isNotEmpty() }
             .toSet()
-        return names
     }
-
 
     /** 把 APK assets 里的二进制释放到 /data/adb/ksu/bin（只能走 root shell） */
     fun ensureTools(context: Context, assets: List<String>): String? {
@@ -1232,6 +1269,7 @@ fun repatch(context: Context, moduleUris: List<Uri>, onStep: (String) -> Unit = 
     }
 }
 ''')
+open(kd+'/KpmNatives.kt','w').write('package org.bakasu.bakasu.ui.screen.kpm\n\n/** JNI：直接调内核 KernelPatch 的 supercall（不 fork 任何进程） */\nobject KpmNatives {\n    init {\n        System.loadLibrary("kernelsu")\n    }\n\n    external fun load(path: String, args: String): Int\n\n    external fun unload(name: String): Int\n\n    external fun nums(): Int\n\n    external fun control(name: String, args: String): Int\n\n    external fun list(outPath: String): Int\n\n    external fun info(name: String, outPath: String): Int\n}\n')
 print('kpm sources ok')
 
 
