@@ -621,7 +621,7 @@ fun KpmPage(bottomPadding: Dp) {
 
             if (shown.isEmpty()) {
                 Box(
-                    Modifier.fillMaxSize().padding(bottom = bottomPadding + 20.dp),
+                    Modifier.fillMaxSize().padding(bottom = bottomPadding + 32.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
