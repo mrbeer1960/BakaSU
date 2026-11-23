@@ -166,6 +166,13 @@ enum Commands {
     /// Resetprop - Magisk-compatible system property tool
     Resetprop(crate::android::resetprop::Args),
 
+    /// Manage KPM modules (forwarded to kpatch)
+    #[command(trailing_var_arg = true, allow_hyphen_values = true)]
+    Kpm {
+        #[arg(num_args = 0..)]
+        args: Vec<String>,
+    },
+
     /// Manage susfs component
     Susfs(susfs::cli::SusfsArgs),
 
@@ -617,6 +624,7 @@ pub fn run() -> Result<()> {
     let result = match cli.command {
         Commands::AnyKernel3 { zip, slot } => anykernel3::flash(&zip, slot),
         Commands::Susfs(args) => crate::android::susfs::cli::run_main(args),
+        Commands::Kpm { args } => crate::android::kpm::run_main(args),
         Commands::PostFsData => init_event::on_post_fs_data(),
         Commands::BootCompleted => {
             init_event::on_boot_completed();
