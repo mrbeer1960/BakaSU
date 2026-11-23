@@ -30,7 +30,7 @@ jobs:
         run: |
           cd manager
           chmod +x gradlew
-          ./gradlew assembleRelease -Pcommit=${{ github.sha }}
+          ./gradlew assembleRelease -Pcommit=${{ github.sha }} -PKSU_PACKAGE_NAME=com.baka.su
       - uses: actions/upload-artifact@v4
         with:
           name: Manager-release
