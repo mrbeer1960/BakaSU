@@ -209,11 +209,13 @@ data class KpmModule(
 /**
  * KPM 前端桥接。
  *
- * 加载 / 卸载 / 列表 / 信息 / 控制：走 KpmNatives（JNI 直接 supercall，不 fork 任何进程）。
- * 只读内核分区、释放工具：仍通过 root shell（App 自身没有 /data/adb 权限）。
+ * 加载 / 卸载 / 列表 / 信息 / 控制：统一走 root shell（ksud kpm → kpatch）。
+ * 不走 JNI：App 普通 uid 直接发 supercall 会被内核拒（实测 num=-1、list 空、hello 空）。
+ * 只读内核分区、释放工具：同样通过 root shell。
  */
 object KpmBridge {
     const val MODULE_DIR = "/data/adb/kpm"
+    private const val KSUD = "/data/adb/ksud"
     private const val EMBED_WORK = "/data/local/tmp/kpm-chk"
 
     private fun sh(cmd: String): Pair<Int, String> = try {
@@ -222,6 +224,10 @@ object KpmBridge {
     } catch (t: Throwable) {
         Pair(-1, t.message ?: "error")
     }
+
+    /** ksud kpm <args> → kpatch kpm <args>（root shell） */
+    private fun kpm(vararg args: String): Pair<Int, String> =
+        sh((listOf(KSUD, "kpm") + args).joinToString(" "))
 
     /** JNI 的 list/info 会打印到 stdout，这里重定向到临时文件再读回 */
     private fun capture(context: Context, block: (String) -> Int): Pair<Int, String> {
@@ -240,21 +246,14 @@ object KpmBridge {
         return rc to text
     }
 
-    fun nums(): Int = try {
-        KpmNatives.nums()
-    } catch (t: Throwable) {
-        0
-    }
+    fun nums(): Int = kpm("num").second.trim().toIntOrNull() ?: 0
 
-    private fun loadedNames(context: Context): Set<String> {
-        val (rc, text) = capture(context) { KpmNatives.list(it) }
-        if (rc != 0) return emptySet()
-        return text.lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
-    }
+    private fun loadedNames(context: Context): Set<String> =
+        kpm("list").second.lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 
     private fun parseInfo(context: Context, name: String, loaded: Set<String>): KpmModule {
         val fields = HashMap<String, String>()
-        val (_, text) = capture(context) { KpmNatives.info(name, it) }
+        val text = kpm("info", name).second
         text.lines().forEach { line ->
             val idx = line.indexOf('=')
             if (idx > 0) {
@@ -279,24 +278,17 @@ object KpmBridge {
     }
 
     /** 从任意路径加载（不落地，重启即失效） */
-    fun load(path: String): String = try {
-        val rc = KpmNatives.load(path, "")
-        if (rc == 0) "" else "error: $rc"
-    } catch (t: Throwable) {
-        "失败: ${t.message}"
+    fun load(path: String): String {
+        val (rc, text) = kpm("load", "'$path'")
+        return if (rc == 0) text else "失败(code=$rc)：$text"
     }
 
-    fun unload(name: String): String = try {
-        val rc = KpmNatives.unload(name)
-        if (rc == 0) "" else "error: $rc"
-    } catch (t: Throwable) {
-        "失败: ${t.message}"
+    fun unload(name: String): String {
+        val (rc, text) = kpm("unload", name)
+        return if (rc == 0) text else "失败(code=$rc)：$text"
     }
 
-    fun info(context: Context, name: String): String {
-        val (rc, text) = capture(context) { KpmNatives.info(name, it) }
-        return if (rc == 0) text else ""
-    }
+    fun info(context: Context, name: String): String = kpm("info", name).second
 
     /** 用 kptools 读 .kpm 内部的模块名 */
     fun moduleName(path: String): String? =
@@ -304,11 +296,9 @@ object KpmBridge {
             .lines().firstOrNull { it.startsWith("name=") }
             ?.substringAfter("name=")?.trim()?.takeIf { it.isNotEmpty() }
 
-    fun control(name: String, args: String): String = try {
-        val rc = KpmNatives.control(name, args)
-        if (rc == 0) "ok" else "error: $rc"
-    } catch (t: Throwable) {
-        "失败: ${t.message}"
+    fun control(name: String, args: String): String {
+        val (rc, text) = kpm("ctl0", name, args)
+        return if (rc == 0) text.ifBlank { "ok" } else text.ifBlank { "error: $rc" }
     }
 
     /** 直接读 boot 镜像，取里面真正嵌入的模块名（不依赖本地清单） */
