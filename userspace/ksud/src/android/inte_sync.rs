@@ -26,7 +26,8 @@ const INTE_KO_CANDIDATES: [&str; 2] = [
     "/vendor_dlkm/lib/modules/inte.ko",
     "/vendor/lib/modules/inte.ko",
 ];
-const MODULE_DIRS: [&str; 12] = [
+/// 查找表内模块时使用的目录（含第三方，避免表里真有条目时找不到）
+const FIND_DIRS: [&str; 12] = [
     "/system_dlkm/lib/modules",
     "/system/lib/modules",
     "/vendor_dlkm/lib/modules",
@@ -39,6 +40,17 @@ const MODULE_DIRS: [&str; 12] = [
     "/system_ext/lib/modules",
     "/data/adb/modules",
     "/data/local/tmp",
+];
+/// sys 表只收录系统 GKI 模块
+const SYS_ADD_DIRS: [&str; 2] = ["/system_dlkm/lib/modules", "/system/lib/modules"];
+/// vendor 表只收录厂商分区模块（不含 /data 下的第三方模块）
+const VND_ADD_DIRS: [&str; 6] = [
+    "/vendor_dlkm/lib/modules",
+    "/vendor/lib/modules",
+    "/odm/lib/modules",
+    "/product/lib/modules",
+    "/my_product/lib/modules",
+    "/my_stock/lib/modules",
 ];
 const NAME_LEN: usize = 40;
 const HASH_LEN: usize = 32;
@@ -178,8 +190,8 @@ fn save_cache(map: &HashMap<String, Cached>) {
     }
 }
 
-fn find_module(name: &str) -> Option<PathBuf> {
-    for dir in MODULE_DIRS {
+fn find_module(name: &str, dirs: &[&str]) -> Option<PathBuf> {
+    for dir in dirs {
         let p = Path::new(dir).join(name);
         if p.is_file() {
             return Some(p);
@@ -227,6 +239,7 @@ fn backup_once(table: &str) -> Result<()> {
 
 fn sync_one(
     table: &str,
+    add_dirs: &[&str],
     check: bool,
     cache: &mut HashMap<String, Cached>,
 ) -> Result<(usize, usize, usize, usize)> {
@@ -237,7 +250,7 @@ fn sync_one(
     let mut dirty = false;
 
     for e in entries.iter_mut() {
-        let Some(path) = find_module(&e.name) else {
+        let Some(path) = find_module(&e.name, &FIND_DIRS) else {
             miss += 1;
             continue;
         };
@@ -265,8 +278,14 @@ fn sync_one(
             ok += 1;
         } else {
             fix += 1;
+            info!(
+                "inte-sync: {} {} {} -> {}",
+                if check { "WOULD-FIX" } else { "FIX" },
+                e.name,
+                e.hash,
+                hash
+            );
             if !check {
-                info!("inte-sync: FIX {} {} -> {}", e.name, e.hash, hash);
                 e.hash = hash;
                 dirty = true;
             }
@@ -279,15 +298,20 @@ fn sync_one(
         if entries.iter().any(|e| e.name == fname || e.name == name) {
             continue;
         }
-        let Some(path) = find_module(&fname) else {
+        let Some(path) = find_module(&fname, add_dirs) else {
             continue;
         };
         let Ok(h) = sha256_of(&path) else {
             continue;
         };
         add += 1;
+        info!(
+            "inte-sync: {} {} {}",
+            if check { "WOULD-ADD" } else { "ADD" },
+            fname,
+            h
+        );
         if !check {
-            info!("inte-sync: ADD {} {}", fname, h);
             entries.push(Entry {
                 name: fname,
                 hash: h,
@@ -306,12 +330,15 @@ fn sync_one(
 pub fn run_main(check: bool) -> Result<()> {
     let mut cache = load_cache();
     let mut total = (0usize, 0usize, 0usize, 0usize);
-    for table in [SYS_TABLE, VND_TABLE] {
+    for (table, add_dirs) in [
+        (SYS_TABLE, &SYS_ADD_DIRS[..]),
+        (VND_TABLE, &VND_ADD_DIRS[..]),
+    ] {
         if !Path::new(table).is_file() {
             warn!("inte-sync: {table} not found, skip");
             continue;
         }
-        match sync_one(table, check, &mut cache) {
+        match sync_one(table, add_dirs, check, &mut cache) {
             Ok((ok, fix, add, miss)) => {
                 info!("inte-sync {table}: ok={ok} fix={fix} add={add} miss={miss}");
                 total.0 += ok;
