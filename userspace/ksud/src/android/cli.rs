@@ -178,6 +178,9 @@ enum Commands {
         /// only check, do not write anything
         #[arg(long)]
         check: bool,
+        /// also verify srcversion of loaded modules against disk (slower)
+        #[arg(long)]
+        deep: bool,
     },
 
     /// Manage susfs component
@@ -632,7 +635,7 @@ pub fn run() -> Result<()> {
         Commands::AnyKernel3 { zip, slot } => anykernel3::flash(&zip, slot),
         Commands::Susfs(args) => crate::android::susfs::cli::run_main(args),
         Commands::Kpm { args } => crate::android::kpm::run_main(args),
-        Commands::InteSync { check } => crate::android::inte_sync::run_main(check),
+        Commands::InteSync { check, deep } => crate::android::inte_sync::run_main(check, deep),
         Commands::PostFsData => init_event::on_post_fs_data(),
         Commands::BootCompleted => {
             init_event::on_boot_completed();
