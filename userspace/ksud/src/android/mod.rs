@@ -5,6 +5,7 @@ mod feature;
 mod hot_install;
 mod kpm;
 mod init_event;
+pub mod inte_sync;
 mod ksucalls;
 mod late_load;
 mod module;
