@@ -126,44 +126,6 @@ fn write_table(path: &str, entries: &[Entry]) -> Result<()> {
     Ok(())
 }
 
-fn build_id_of_module(name: &str) -> Option<Vec<u8>> {
-    let p = format!("/sys/module/{name}/notes/.note.gnu.build-id");
-    let d = fs::read(p).ok()?;
-    if d.len() < 12 {
-        return None;
-    }
-    let namesz = u32::from_le_bytes([d[0], d[1], d[2], d[3]]) as usize;
-    let descsz = u32::from_le_bytes([d[4], d[5], d[6], d[7]]) as usize;
-    let mut off = 12 + namesz;
-    off = (off + 3) & !3;
-    if descsz == 0 || off + descsz > d.len() {
-        return None;
-    }
-    Some(d[off..off + descsz].to_vec())
-}
-
-fn file_contains(path: &Path, needle: &[u8]) -> bool {
-    let Ok(data) = fs::read(path) else {
-        return false;
-    };
-    if needle.is_empty() || data.len() < needle.len() {
-        return false;
-    }
-    data.windows(needle.len()).any(|w| w == needle)
-}
-
-/// 磁盘文件与内核里已加载模块是否同版本（比对 build-id，返回 Some(内存id, 说明) 表示不一致）
-fn stale_check(name: &str, path: &Path) -> Option<(String, String)> {
-    let module = name.strip_suffix(".ko").unwrap_or(name);
-    let id = build_id_of_module(module)?;
-    let hexid = to_hex(&id);
-    if file_contains(path, &id) {
-        None
-    } else {
-        Some((hexid, "磁盘文件里找不到该 build-id".to_string()))
-    }
-}
-
 fn sha256_of(path: &Path) -> Result<String> {
     let data = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     Ok(sha256::digest(&data))
@@ -266,13 +228,12 @@ fn sync_one(
     table: &str,
     dirs: &[&str],
     check: bool,
-    deep: bool,
     cache: &mut HashMap<String, Cached>,
-) -> Result<(usize, usize, usize, usize, usize)> {
+) -> Result<(usize, usize, usize, usize)> {
     let mut entries = read_table(table)?;
     backup_once(table)?;
 
-    let (mut ok, mut fix, mut add, mut miss, mut stale) = (0, 0, 0, 0, 0);
+    let (mut ok, mut fix, mut add, mut miss) = (0, 0, 0, 0);
     let mut dirty = false;
 
     for e in entries.iter_mut() {
@@ -300,8 +261,9 @@ fn sync_one(
                 h
             }
         };
-        let changed = hash != e.hash;
-        if changed {
+        if hash == e.hash {
+            ok += 1;
+        } else {
             fix += 1;
             info!(
                 "inte-sync: {} {} {} -> {}",
@@ -313,18 +275,6 @@ fn sync_one(
             if !check {
                 e.hash = hash;
                 dirty = true;
-            }
-        } else {
-            ok += 1;
-        }
-        // 磁盘文件与内核里已加载模块是否同版本（原版也会比对 build-id / srcversion）
-        if changed || deep {
-            if let Some((mem, disk)) = stale_check(&e.name, &path) {
-                stale += 1;
-                warn!(
-                    "inte-sync: STALE {} 内存={} 磁盘={}（磁盘变了但模块未重载）",
-                    e.name, mem, disk
-                );
             }
         }
     }
@@ -360,38 +310,36 @@ fn sync_one(
     if dirty && !check {
         write_table(table, &entries)?;
     }
-    Ok((ok, fix, add, miss, stale))
+    Ok((ok, fix, add, miss))
 }
 
 /// `ksud inte-sync [--check]`
-pub fn run_main(check: bool, deep: bool) -> Result<()> {
+pub fn run_main(check: bool) -> Result<()> {
     let mut cache = load_cache();
-    let mut total = (0usize, 0usize, 0usize, 0usize, 0usize);
+    let mut total = (0usize, 0usize, 0usize, 0usize);
     for (table, dirs) in [(SYS_TABLE, &SYS_DIRS[..]), (VND_TABLE, &VND_DIRS[..])] {
         if !Path::new(table).is_file() {
             warn!("inte-sync: {table} not found, skip");
             continue;
         }
-        match sync_one(table, dirs, check, deep, &mut cache) {
-            Ok((ok, fix, add, miss, stale)) => {
+        match sync_one(table, dirs, check, &mut cache) {
+            Ok((ok, fix, add, miss)) => {
                 info!("inte-sync {table}: ok={ok} fix={fix} add={add} miss={miss}");
                 total.0 += ok;
                 total.1 += fix;
                 total.2 += add;
                 total.3 += miss;
-                total.4 += stale;
             }
             Err(e) => warn!("inte-sync {table} failed: {e:#}"),
         }
     }
     save_cache(&cache);
     println!(
-        "inte-sync: ok={} fix={} add={} miss={} stale={}{}",
+        "inte-sync: ok={} fix={} add={} miss={}{}",
         total.0,
         total.1,
         total.2,
         total.3,
-        total.4,
         if check { " (check only)" } else { "" }
     );
     if !check && (total.1 > 0 || total.2 > 0) {
@@ -405,7 +353,7 @@ pub fn run_post_fs_data() {
     if !Path::new(SYS_TABLE).is_file() && !Path::new(VND_TABLE).is_file() {
         return;
     }
-    if let Err(e) = run_main(false, false) {
+    if let Err(e) = run_main(false) {
         warn!("inte-sync post-fs-data failed: {e:#}");
     }
 }
