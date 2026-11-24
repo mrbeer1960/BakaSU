@@ -173,6 +173,13 @@ enum Commands {
         args: Vec<String>,
     },
 
+    /// Sync OPPO inte.ko module hash table (inte.ko_sync compatible)
+    InteSync {
+        /// only check, do not write anything
+        #[arg(long)]
+        check: bool,
+    },
+
     /// Manage susfs component
     Susfs(susfs::cli::SusfsArgs),
 
@@ -625,6 +632,7 @@ pub fn run() -> Result<()> {
         Commands::AnyKernel3 { zip, slot } => anykernel3::flash(&zip, slot),
         Commands::Susfs(args) => crate::android::susfs::cli::run_main(args),
         Commands::Kpm { args } => crate::android::kpm::run_main(args),
+        Commands::InteSync { check } => crate::android::inte_sync::run_main(check),
         Commands::PostFsData => init_event::on_post_fs_data(),
         Commands::BootCompleted => {
             init_event::on_boot_completed();
