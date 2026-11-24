@@ -123,6 +123,9 @@ pub fn on_post_fs_data() -> Result<()> {
         warn!("load system.prop failed: {e}");
     }
 
+    // inte.ko 指纹表同步（等价于 inte.ko_sync 模块的 post-fs-data 阶段，失败不影响开机）
+    crate::android::inte_sync::run_post_fs_data();
+
     // execute metamodule mount script
     if let Err(e) = metamodule::exec_mount_script(module_dir) {
         warn!("execute metamodule mount failed: {e}");
