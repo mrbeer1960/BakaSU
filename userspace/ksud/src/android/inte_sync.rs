@@ -126,33 +126,41 @@ fn write_table(path: &str, entries: &[Entry]) -> Result<()> {
     Ok(())
 }
 
-fn srcversion_of_module(name: &str) -> Option<String> {
-    let p = format!("/sys/module/{name}/srcversion");
-    fs::read_to_string(p).ok().map(|s| s.trim().to_string())
+fn build_id_of_module(name: &str) -> Option<Vec<u8>> {
+    let p = format!("/sys/module/{name}/notes/.note.gnu.build-id");
+    let d = fs::read(p).ok()?;
+    if d.len() < 12 {
+        return None;
+    }
+    let namesz = u32::from_le_bytes([d[0], d[1], d[2], d[3]]) as usize;
+    let descsz = u32::from_le_bytes([d[4], d[5], d[6], d[7]]) as usize;
+    let mut off = 12 + namesz;
+    off = (off + 3) & !3;
+    if descsz == 0 || off + descsz > d.len() {
+        return None;
+    }
+    Some(d[off..off + descsz].to_vec())
 }
 
-fn srcversion_of_file(path: &Path) -> Option<String> {
-    let data = fs::read(path).ok()?;
-    let key = b"srcversion=";
-    let pos = data.windows(key.len()).position(|w| w == key)? + key.len();
-    let rest = &data[pos..];
-    let end = rest
-        .iter()
-        .position(|&c| !(c.is_ascii_alphanumeric() || c == b'_'))
-        .unwrap_or(rest.len());
-    let v = String::from_utf8_lossy(&rest[..end]).to_string();
-    if v.is_empty() { None } else { Some(v) }
+fn file_contains(path: &Path, needle: &[u8]) -> bool {
+    let Ok(data) = fs::read(path) else {
+        return false;
+    };
+    if needle.is_empty() || data.len() < needle.len() {
+        return false;
+    }
+    data.windows(needle.len()).any(|w| w == needle)
 }
 
-/// 磁盘文件与内存中已加载模块是否同版本（返回 Some((内存, 磁盘)) 表示不一致）
+/// 磁盘文件与内核里已加载模块是否同版本（比对 build-id，返回 Some(内存id, 说明) 表示不一致）
 fn stale_check(name: &str, path: &Path) -> Option<(String, String)> {
     let module = name.strip_suffix(".ko").unwrap_or(name);
-    let mem = srcversion_of_module(module)?;
-    let disk = srcversion_of_file(path)?;
-    if mem != disk {
-        Some((mem, disk))
-    } else {
+    let id = build_id_of_module(module)?;
+    let hexid = to_hex(&id);
+    if file_contains(path, &id) {
         None
+    } else {
+        Some((hexid, "磁盘文件里找不到该 build-id".to_string()))
     }
 }
 
