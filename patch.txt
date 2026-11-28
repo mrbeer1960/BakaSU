@@ -1265,3 +1265,49 @@ print('kpm sources ok')
 
 
 
+
+
+# ===== 图标与启动动画（源码级）=====
+import os as _os, re as _re
+_RES='app/src/main/res'
+def _wr(rel, content):
+    p=_os.path.join(_RES, rel)
+    _os.makedirs(_os.path.dirname(p), exist_ok=True)
+    open(p,'w',encoding='utf-8').write(content)
+
+_wr('drawable/ic_launcher_foreground.xml', '<?xml version="1.0" encoding="utf-8"?>\n<vector xmlns:android="http://schemas.android.com/apk/res/android"\n    android:width="108dp"\n    android:height="108dp"\n    android:viewportWidth="108"\n    android:viewportHeight="108">\n\n    <group\n        android:scaleX="0.135"\n        android:scaleY="0.135">\n        <path\n            android:pathData="M 259 259 H 541 V 541 H 259 V 259 Z"\n            android:strokeWidth="18"\n            android:strokeColor="@color/ic_launcher_foreground" />\n        <path\n            android:fillColor="@color/ic_launcher_foreground"\n            android:pathData="M 257 257 H 407 V 407 H 257 V 257 Z" />\n        <path\n            android:fillColor="@color/ic_launcher_foreground"\n            android:pathData="M 393 393 H 543 V 543 H 393 V 393 Z" />\n    </group>\n</vector>')
+_wr('drawable/ic_logo_vector.xml', '<?xml version="1.0" encoding="utf-8"?>\n<vector xmlns:android="http://schemas.android.com/apk/res/android"\n    android:width="108dp"\n    android:height="108dp"\n    android:viewportWidth="500"\n    android:viewportHeight="500">\n    <group\n        android:name="splash_content"\n        android:pivotX="250"\n        android:pivotY="250"\n        android:scaleX="0.60"\n        android:scaleY="0.60">\n        <path\n            android:fillColor="@color/ic_splash_background"\n            android:pathData="M135,25h230a110,110 0 0 1 110,110v230a110,110 0 0 1 -110,110h-230a110,110 0 0 1 -110,-110v-230a110,110 0 0 1 110,-110z" />\n        <group\n            android:pivotX="250"\n            android:pivotY="250"\n            android:scaleX="0.68"\n            android:scaleY="0.68">\n            <group>\n                <clip-path android:pathData="M70,50 H450 V70 H70 L50,50 Z" />\n                <path\n                    android:name="outline_a_horizontal"\n                    android:fillColor="@android:color/transparent"\n                    android:pathData="M60,60 H440"\n                    android:strokeWidth="20"\n                    android:strokeColor="@color/ic_launcher_foreground"\n                    android:strokeLineCap="square"\n                    android:trimPathEnd="1" />\n            </group>\n            <group>\n                <clip-path android:pathData="M430,50 H450 V450 H430 L430,450 Z" />\n                <path\n                    android:name="outline_a_vertical"\n                    android:fillColor="@android:color/transparent"\n                    android:pathData="M440,60 V440"\n                    android:strokeWidth="20"\n                    android:strokeColor="@color/ic_launcher_foreground"\n                    android:strokeLineCap="square"\n                    android:trimPathEnd="1" />\n            </group>\n            <group>\n                <clip-path android:pathData="M50,430 H430 L450,450 H50 Z" />\n                <path\n                    android:name="outline_b_horizontal"\n                    android:fillColor="@android:color/transparent"\n                    android:pathData="M440,440 H60"\n                    android:strokeWidth="20"\n                    android:strokeColor="@color/ic_launcher_foreground"\n                    android:strokeLineCap="square"\n                    android:trimPathEnd="1" />\n            </group>\n            <group>\n                <clip-path android:pathData="M50,50 H70 V450 H50 Z" />\n                <path\n                    android:name="outline_b_vertical"\n                    android:fillColor="@android:color/transparent"\n                    android:pathData="M60,440 V60"\n                    android:strokeWidth="20"\n                    android:strokeColor="@color/ic_launcher_foreground"\n                    android:strokeLineCap="square"\n                    android:trimPathEnd="1" />\n            </group>\n            <group\n                android:name="square_a"\n                android:translateX="240"\n                android:translateY="240">\n                <path\n                    android:fillColor="@color/ic_launcher_foreground"\n                    android:pathData="M0,0h210v210h-210z" />\n            </group>\n            <group\n                android:name="square_b"\n                android:translateX="50"\n                android:translateY="50">\n                <path\n                    android:fillColor="@color/ic_launcher_foreground"\n                    android:pathData="M0,0h210v210h-210z" />\n            </group>\n        </group>\n    </group>\n</vector>\n')
+_wr('drawable/ic_launcher_splash.xml', '<?xml version="1.0" encoding="utf-8"?>\n<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"\n    android:drawable="@drawable/ic_logo_vector">\n    <target\n        android:name="outline_a_horizontal"\n        android:animation="@animator/anim_outline_horizontal" />\n    <target\n        android:name="outline_a_vertical"\n        android:animation="@animator/anim_outline_vertical" />\n    <target\n        android:name="outline_b_horizontal"\n        android:animation="@animator/anim_outline_horizontal" />\n    <target\n        android:name="outline_b_vertical"\n        android:animation="@animator/anim_outline_vertical" />\n    <target\n        android:name="square_a"\n        android:animation="@animator/anim_square_path" />\n    <target\n        android:name="square_b"\n        android:animation="@animator/anim_square_path_rev" />\n</animated-vector>\n')
+_wr('animator/anim_outline_horizontal.xml', '<?xml version="1.0" encoding="utf-8"?>\n<objectAnimator xmlns:android="http://schemas.android.com/apk/res/android"\n    android:duration="250"\n    android:interpolator="@android:interpolator/fast_out_slow_in"\n    android:propertyName="trimPathEnd"\n    android:valueFrom="0"\n    android:valueTo="1"\n    android:valueType="floatType" />\n')
+_wr('animator/anim_outline_vertical.xml', '<?xml version="1.0" encoding="utf-8"?>\n<objectAnimator xmlns:android="http://schemas.android.com/apk/res/android"\n    android:duration="250"\n    android:interpolator="@android:interpolator/fast_out_slow_in"\n    android:propertyName="trimPathEnd"\n    android:startOffset="250"\n    android:valueFrom="0"\n    android:valueTo="1"\n    android:valueType="floatType" />\n')
+_wr('animator/anim_square_path.xml', '<?xml version="1.0" encoding="utf-8"?>\n<set xmlns:android="http://schemas.android.com/apk/res/android"\n    android:ordering="sequentially">\n\n    <objectAnimator\n        android:duration="250"\n        android:interpolator="@android:interpolator/fast_out_slow_in"\n        android:propertyName="translateX"\n        android:valueFrom="50"\n        android:valueTo="240"\n        android:valueType="floatType" />\n\n    <objectAnimator\n        android:duration="250"\n        android:interpolator="@android:interpolator/fast_out_slow_in"\n        android:propertyName="translateY"\n        android:valueFrom="50"\n        android:valueTo="240"\n        android:valueType="floatType" />\n\n</set>\n')
+_wr('animator/anim_square_path_rev.xml', '<?xml version="1.0" encoding="utf-8"?>\n<set xmlns:android="http://schemas.android.com/apk/res/android"\n    android:ordering="sequentially">\n\n    <objectAnimator\n        android:duration="250"\n        android:interpolator="@android:interpolator/fast_out_slow_in"\n        android:propertyName="translateX"\n        android:valueFrom="240"\n        android:valueTo="50"\n        android:valueType="floatType" />\n\n    <objectAnimator\n        android:duration="250"\n        android:interpolator="@android:interpolator/fast_out_slow_in"\n        android:propertyName="translateY"\n        android:valueFrom="240"\n        android:valueTo="50"\n        android:valueType="floatType" />\n\n</set>\n')
+
+COLS={'ic_launcher_background':'#FFFFFFFF','ic_launcher_foreground':'#FF1E110D'}
+for _rel in ('values/colors.xml','values-night/colors.xml','values-v31/colors.xml','values-night-v31/colors.xml'):
+    _p=_os.path.join(_RES,_rel)
+    if not _os.path.exists(_p): continue
+    _s=open(_p,encoding='utf-8').read()
+    for _k,_v in COLS.items():
+        _s=_re.sub(r'(<color name="%s">)[^<]*(</color>)'%_k, r'\g<1>%s\g<2>'%_v, _s)
+    if 'ic_splash_background' not in _s:
+        _s=_s.replace('</resources>','    <color name="ic_splash_background">#FFF5F5F5</color>\n</resources>')
+    open(_p,'w',encoding='utf-8').write(_s)
+
+_p=_os.path.join(_RES,'values/themes.xml')
+_s=open(_p,encoding='utf-8').read()
+_old='''    <style name="Theme.KernelSU.Starting" parent="Theme.SplashScreen">
+        <item name="postSplashScreenTheme">@style/Theme.KernelSU</item>
+    </style>'''
+_new='''    <style name="Theme.KernelSU.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@android:color/background_light</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_splash</item>
+        <item name="windowSplashScreenAnimationDuration">500</item>
+        <item name="postSplashScreenTheme">@style/Theme.KernelSU</item>
+    </style>'''
+if _old in _s:
+    open(_p,'w',encoding='utf-8').write(_s.replace(_old,_new))
+    print('icon/splash theme ok')
+else:
+    print('WARN: Theme.KernelSU.Starting 未匹配')
+print('icon/splash ok')
